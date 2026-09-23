@@ -1,0 +1,27 @@
+{
+  "name": "hack-604531bc-pitchers",
+  "version": "1.0.0",
+  "description": "Hackathon team repository for pITchers",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BAITC-Hacks/hack-604531bc-pitchers.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/BAITC-Hacks/hack-604531bc-pitchers/issues"
+  },
+  "homepage": "https://github.com/BAITC-Hacks/hack-604531bc-pitchers#readme",
+  "dependencies": {
+    "csv-parse": "^7.0.2",
+    "dotenv": "^18.0.3",
+    "express": "^5.2.1",
+    "openai": "^7.23.0"
+  }
+}
