@@ -160,6 +160,99 @@ function differentiatorsFor(entry, shown) {
   return tags;
 }
 
+// --- fallback differentiators ----------------------------------------------
+
+const WORD_PATTERN = /[a-zа-яё]{5,}/gi;
+const SCORE_PARTS = ["relevance", "budget", "specialization", "hours", "dataQuality"];
+const wordsOf = (description) => new Set(String(description ?? "").toLowerCase().match(WORD_PATTERN) ?? []);
+
+const frequencyCache = new WeakMap();
+
+/** How many profiles in the whole catalogue use each word — lets us pick the rarest one. */
+function documentFrequency(contractors) {
+  let frequency = frequencyCache.get(contractors);
+  if (frequency === undefined) {
+    frequency = new Map();
+    for (const contractor of contractors) {
+      for (const word of wordsOf(contractor.description)) {
+        frequency.set(word, (frequency.get(word) ?? 0) + 1);
+      }
+    }
+    frequencyCache.set(contractors, frequency);
+  }
+  return frequency;
+}
+
+/** Rarest word across the catalogue, ties broken alphabetically — deterministic either way. */
+function rarestWord(words, frequency) {
+  return [...words].sort(
+    (a, b) => (frequency.get(a) ?? 0) - (frequency.get(b) ?? 0) || a.localeCompare(b, "ru"),
+  )[0];
+}
+
+/**
+ * Runs only when no strict differentiator applies: walks measurable dimensions in a fixed order
+ * (price rank, hours, languages, formats, best score component, data origin, rare wording)
+ * so every shown card always carries at least one concrete difference.
+ */
+function fallbackDifferentiator(entry, others, contractors) {
+  const { contractor, scoreParts } = entry;
+  const shownWithPrice = [entry, ...others].filter((item) => item.contractor.priceFrom !== null);
+
+  if (contractor.priceFrom !== null && shownWithPrice.length === others.length + 1) {
+    const prices = shownWithPrice.map((item) => item.contractor.priceFrom).sort((a, b) => a - b);
+    if (new Set(prices).size === prices.length) {
+      return `priceRank:${prices.indexOf(contractor.priceFrom) + 1}of${prices.length}`;
+    }
+  }
+  if (contractor.maxHours !== null && others.every((item) => item.contractor.maxHours !== contractor.maxHours)) {
+    return `uniqueHours:${contractor.maxHours}`;
+  }
+  const ownLanguages = contractor.languages.filter((language) =>
+    others.every((item) => !item.contractor.languages.includes(language)),
+  );
+  if (ownLanguages.length > 0) return `onlyLanguage:${[...ownLanguages].sort((a, b) => a.localeCompare(b, "ru"))[0]}`;
+  if (others.every((item) => contractor.languages.length > item.contractor.languages.length)) {
+    return `mostLanguages:${contractor.languages.length}`;
+  }
+  if (others.every((item) => item.contractor.formats.length !== contractor.formats.length)) {
+    return `uniqueFormatCount:${contractor.formats.length}`;
+  }
+  const bestPart = SCORE_PARTS.find((part) => others.every((item) => scoreParts[part] > item.scoreParts[part]));
+  if (bestPart) return `bestScore:${bestPart}`;
+
+  if (!contractor.flags.synthetic && others.some((item) => item.contractor.flags.synthetic)) return "realProfile";
+  if (contractor.flags.synthetic && others.some((item) => !item.contractor.flags.synthetic)) return "syntheticProfile";
+
+  const frequency = documentFrequency(contractors);
+  const ownWords = wordsOf(contractor.description);
+  const otherWords = new Set(others.flatMap((item) => [...wordsOf(item.contractor.description)]));
+  const unique = [...ownWords].filter((word) => !otherWords.has(word));
+  if (unique.length > 0) return `uniqueWord:${rarestWord(unique, frequency)}`;
+  if (ownWords.size > 0) return `rareWord:${rarestWord(ownWords, frequency)}`;
+  return "equalOnAllDimensions";
+}
+
+/** Strict tags first; if a card has none, the ladder above guarantees exactly one. */
+function allDifferentiators(entry, shown, contractors) {
+  // A single card has no siblings to contrast with, but being the only fit is itself a fact.
+  if (shown.length < 2) return ["onlyFit"];
+  const strict = differentiatorsFor(entry, shown);
+  if (strict.length > 0) return strict;
+  const others = shown.filter((item) => item.contractor.id !== entry.contractor.id);
+  return [fallbackDifferentiator(entry, others, contractors)];
+}
+
+const LANGUAGE_WITH = { "казахский": "с казахским", "русский": "с русским", "английский": "с английским" };
+
+const SCORE_PART_CHIPS = {
+  relevance: "лучше всех совпадает с описанием",
+  budget: "самый большой запас бюджета",
+  specialization: "самый узкий профиль",
+  hours: "лучше всех по часам",
+  dataQuality: "самые полные данные в каталоге",
+};
+
 const DIFFERENTIATOR_CHIPS = {
   cheapest: () => "самый доступный из показанных",
   onlyKazakh: () => "единственный с казахским",
@@ -167,7 +260,27 @@ const DIFFERENTIATOR_CHIPS = {
   mostSpecialized: (facts) => `узкий профиль — ${facts.formats.length} ${plural(facts.formats.length, "формат", "формата")}`,
   onlyMentionsEventType: (_facts, query) => `единственный упоминает «${query.eventType}»`,
   noHourLimit: () => "без ограничения по часам",
+  onlyFit: () => "единственный подходящий вариант",
+  equalOnAllDimensions: () => "по всем признакам как у остальных",
+  realProfile: () => "реальный профиль каталога",
+  syntheticProfile: () => "синтетический профиль",
+  priceRank: (_facts, _query, value) => `${value.replace("of", "-я цена из ")}`,
+  uniqueHours: (_facts, _query, value) => `единственный с лимитом ${value} ч`,
+  onlyLanguage: (_facts, _query, value) => `единственный ${LANGUAGE_WITH[value] ?? `с языком «${value}»`}`,
+  mostLanguages: (_facts, _query, value) => `больше всех языков — ${value}`,
+  uniqueFormatCount: (_facts, _query, value) => `форматов: ${value}`,
+  bestScore: (_facts, _query, value) => SCORE_PART_CHIPS[value],
+  uniqueWord: (_facts, _query, value) => `только у него: ${value}`,
+  rareWord: (_facts, _query, value) => `редкое в каталоге: ${value}`,
 };
+
+/** Tags may carry a value after ":" (`priceRank:2of3`); unknown tags are simply skipped. */
+function differentiatorChip(tag, facts, query) {
+  const separator = tag.indexOf(":");
+  const name = separator === -1 ? tag : tag.slice(0, separator);
+  const value = separator === -1 ? "" : tag.slice(separator + 1);
+  return DIFFERENTIATOR_CHIPS[name]?.(facts, query, value);
+}
 
 /** 2–4 short strings for the card header. Price and hours are always available, so 2 is the floor. */
 function factChips(facts, query) {
@@ -176,7 +289,8 @@ function factChips(facts, query) {
     chips.push(`${formatMoney(facts.priceFrom)} — ${Math.round((facts.priceFrom / query.budget) * 100)}% бюджета`);
   }
   for (const tag of facts.differentiators) {
-    chips.push(DIFFERENTIATOR_CHIPS[tag](facts, query));
+    const chip = differentiatorChip(tag, facts, query);
+    if (chip) chips.push(chip);
   }
   if (facts.matchedKeywords.length > 0) {
     chips.push(`в описании: ${facts.matchedKeywords.slice(0, 2).join(", ")}`);
@@ -186,7 +300,7 @@ function factChips(facts, query) {
   return [...new Set(chips)].slice(0, 4);
 }
 
-function buildCard(entry, shown, query) {
+function buildCard(entry, shown, query, contractors) {
   const { contractor, score, scoreParts, matchedKeywords } = entry;
   const headroomKzt = contractor.priceFrom === null ? null : query.budget - contractor.priceFrom;
 
@@ -210,13 +324,37 @@ function buildCard(entry, shown, query) {
       matchedKeywords,
       descriptionSnippet: descriptionSnippet(contractor.description, matchedKeywords),
       flags: contractor.flags,
-      differentiators: differentiatorsFor(entry, shown),
+      differentiators: allDifferentiators(entry, shown, contractors),
     },
   };
 }
 
 function withFactChips(card, query) {
   return { ...card, factChips: factChips(card.facts, query) };
+}
+
+// --- common facts ----------------------------------------------------------
+
+/** What every shown card shares — the context the per-card differentiators are read against. */
+function buildCommonFacts(cards, query) {
+  if (cards.length === 0) return [];
+  const facts = [`все свободны ${formatDate(query.date)}`, `все работают с форматом «${query.eventType}»`];
+
+  if (cards.every((card) => card.priceFrom !== null)) {
+    facts.push(`все укладываются в бюджет ${formatMoney(query.budget)}`);
+  }
+  if (query.language) {
+    facts.push(`все работают ${LANGUAGE_IN[query.language.toLowerCase()] ?? `на языке «${query.language}»`}`);
+  }
+  if (query.hours) facts.push(`все закрывают ${query.hours} ч`);
+
+  const shared = cards[0].facts.languages.filter((language) =>
+    cards.every((card) => card.facts.languages.includes(language)) && language !== query.language,
+  );
+  if (shared.length > 0) facts.push(`все говорят на: ${shared.join(", ")}`);
+  if (cards.every((card) => !card.flags.synthetic)) facts.push("все профили реальные, не синтетические");
+
+  return facts;
 }
 
 // --- excluded list ---------------------------------------------------------
@@ -397,6 +535,7 @@ export function recommend(rawQuery, options = {}) {
       excluded: countExcluded([]),
       excludedList: [],
       cards: [],
+      commonFacts: [],
       otherCities,
       hints: {},
       actions: buildActions(query, {}, otherCities),
@@ -409,13 +548,16 @@ export function recommend(rawQuery, options = {}) {
   const status = shown.length >= MAX_CARDS ? "found" : shown.length > 0 ? "partial" : "all_filtered";
   const hints = status === "found" ? {} : buildHints(candidates, query);
 
+  const cards = shown.map((entry) => withFactChips(buildCard(entry, shown, query, contractors), query));
+
   return {
     status,
     query,
     candidatesTotal: candidates.length,
     excluded: countExcluded(excluded),
     excludedList: buildExcludedList(excluded, query),
-    cards: shown.map((entry) => withFactChips(buildCard(entry, shown, query), query)),
+    cards,
+    commonFacts: buildCommonFacts(cards, query),
     otherCities: [],
     hints,
     actions: buildActions(query, hints, []),
