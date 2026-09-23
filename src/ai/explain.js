@@ -15,11 +15,15 @@ export const SYSTEM_PROMPT = `Ты объясняешь подбор event-по�
 которой нет у остальных карточек. Эти отличия вычислены только из facts показанных карточек.
 Не повторяй общую дату, город, соответствие формату, языку и запрошенным часам:
 они уже вынесены в commonFacts и показываются над карточками один раз.
-Укажи цену ОТ (цифры с пробелами между тысячами, знак ₸).
+Цена обязательна в КАЖДОМ объяснении и идёт последней, ПРИСОЕДИНЁННОЙ к предыдущему
+предложению через «; », чтобы уложиться в 1–2 предложения: «...; цена от 900 000 ₸.»
+(цифры с пробелами между тысячами, знак ₸). При priceImputed=true — «оценочная цена от ... ₸».
 Если цена null, напиши «цена не указана», не обещай соответствие бюджету.
+Длинную цитату сокращай, но цену не выбрасывай никогда.
 Не добавляй общий каркас «свободен, формат, цена». При distinguishable=false не выдумывай отличие.
-flags.synthetic=true: после отличия обязательно «Синтетический профиль», это демонстрационные
-данные, а не реальный проверенный подрядчик. flags.priceImputed=true: цена «оценочная».
+flags.synthetic=true: обязательно добавь «синтетический профиль» — это демонстрационные
+данные, а не реальный проверенный подрядчик; присоединяй эту пометку через «; », а не
+отдельным предложением, чтобы уложиться в 1–2 предложения. flags.priceImputed=true: цена «оценочная».
 maxHours=null означает работу без привязки к присутствию, а не бесконечную смену.
 Не добавляй отзывы, рейтинги, гарантии, опыт и другие факты вне входных данных.
 Запрещены «отличный выбор», «идеальный выбор», «идеально подойдёт»,
@@ -62,7 +66,14 @@ export function validExplanations(texts, result) {
     if (forbiddenPhrase.test(text) || !/[а-яё]/iu.test(text)) return false;
     const normalized = fold(text);
     const { differentiator, detail } = evidence[id];
-    if (!normalized.includes(fold(detail)) || !normalized.startsWith(fold(differentiator))) return false;
+    // Every fact of `detail` must be present, but the model may join the clauses its own way
+    // instead of reproducing the exact concatenation.
+    // Quotes may keep punctuation our snippet trimmed, so compare without it.
+    const loose = (value) => fold(value).replace(/[!?.,;:]/g, "").replace(/\s+/g, " ").trim();
+    const looseText = loose(text);
+    const detailClauses = detail.split(";").map((clause) => clause.trim()).filter(Boolean);
+    if (detailClauses.some((clause) => !looseText.includes(loose(clause)))) return false;
+    if (!normalized.startsWith(fold(differentiator))) return false;
     if (Number.isFinite(facts.priceFrom)) {
       if (!normalized.includes(`от ${formatMoney(facts.priceFrom)} ₸`)) return false;
       if (facts.flags.priceImputed && !normalized.includes("оценочн")) return false;
@@ -130,7 +141,7 @@ export function createExplainer(options = {}) {
         let texts;
         try { texts = JSON.parse(choice?.message?.content); } catch { /* One repair attempt below. */ }
         if (choice?.finish_reason === "stop" && validExplanations(texts, result)) return { texts, source: "llm" };
-        messages.push({ role: "user", content: "Проверка не пройдена. Исправь JSON для всех ID: начни с evidence.differentiator, включи evidence.detail; у КАЖДОЙ карточки должна быть своя подтверждённая цифра или точная цитата, отсутствующая в КАЖДОЙ другой. Не повторяй commonFacts, соблюдай 1–2 предложения и признаки синтетических данных." });
+        messages.push({ role: "user", content: "Проверка не пройдена. Исправь JSON для всех ID: начни с evidence.differentiator, включи каждый факт evidence.detail; ОБЯЗАТЕЛЬНО заверши ценой «цена от ... ₸» (или «оценочная цена от ... ₸», либо «цена не указана»); у КАЖДОЙ карточки должна быть своя подтверждённая цифра или точная цитата, отсутствующая в КАЖДОЙ другой. Не повторяй commonFacts, соблюдай 1–2 предложения и признаки синтетических данных." });
       }
       throw new Error("invalid_response");
     } catch (error) {

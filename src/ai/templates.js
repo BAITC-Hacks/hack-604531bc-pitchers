@@ -24,6 +24,43 @@ function snippetFrom(facts) {
   return text.replace(/[«»]/g, '"');
 }
 
+const SCORE_PART_EVIDENCE = {
+  relevance: "лучшее среди показанных совпадение с описанием формата",
+  budget: "самый большой запас бюджета среди показанных",
+  specialization: "самая узкая специализация среди показанных",
+  hours: "лучший среди показанных запас по часам",
+  dataQuality: "самые полные данные профиля среди показанных",
+};
+
+/** Engine tags that carry a value after ":" — see the Contract section of AGENTS.md. */
+const VALUED_EVIDENCE = {
+  priceRank: (value) => {
+    const [rank, total] = value.split("of");
+    return `${rank}-я цена из ${total} среди показанных`;
+  },
+  uniqueHours: (value) => `единственный среди показанных с лимитом присутствия ${value} ч`,
+  onlyLanguage: (value) => `среди показанных только этот профиль указывает ${value} язык`,
+  mostLanguages: (value) => `больше всего языков среди показанных: ${value}`,
+  uniqueFormatCount: (value) => `единственный среди показанных профиль с ${value} форматами`,
+  bestScore: (value) => SCORE_PART_EVIDENCE[value] ?? "",
+  uniqueWord: (value) => `только в этом описании среди показанных есть «${value}»`,
+  rareWord: (value) => `редкое для каталога слово в описании: «${value}»`,
+  realProfile: () => "единственный не синтетический профиль среди показанных",
+  syntheticProfile: () => "единственный синтетический профиль среди показанных",
+  onlyFit: () => "единственный подходящий вариант по этому запросу",
+  equalOnAllDimensions: () => "по имеющимся фактам отличий от остальных не найдено",
+};
+
+function valuedEvidence(tags) {
+  for (const tag of tags) {
+    const separator = tag.indexOf(":");
+    const name = separator === -1 ? tag : tag.slice(0, separator);
+    const phrase = VALUED_EVIDENCE[name]?.(separator === -1 ? "" : tag.slice(separator + 1));
+    if (phrase) return phrase;
+  }
+  return "";
+}
+
 export function explanationEvidence(facts, query) {
   const tags = new Set(facts.differentiators ?? []);
   const differences = [
@@ -34,7 +71,7 @@ export function explanationEvidence(facts, query) {
     ["noHourLimit", "работа не привязана к часам присутствия на площадке"],
     ["onlyMentionsEventType", `только у этого профиля среди показанных найдены ключевые слова формата «${query.eventType}»`],
   ];
-  const differentiator = differences.find(([tag]) => tags.has(tag))?.[1] ?? "";
+  const differentiator = differences.find(([tag]) => tags.has(tag))?.[1] ?? valuedEvidence(tags);
   const snippet = snippetFrom(facts);
   const hours = facts.maxHours === null ? "работа не привязана к часам присутствия" : `лимит присутствия ${facts.maxHours} ч`;
   const detail = snippet ? `в описании: «${snippet}»` : `языки: ${facts.languages.join(", ")}; ${hours}`;
@@ -75,7 +112,13 @@ export function cardEvidence(result) {
     const distinguishable = peers.every((peer) => witnesses.some((witness) => differsFrom(witness, peer.facts)));
     const differentiator = !distinguishable ? "различия по имеющимся фактам не подтверждены"
       : base.differentiator || witnesses[0]?.phrase || base.detail;
-    const details = normalizeText(differentiator).includes(normalizeText(base.detail)) ? [] : [base.detail];
+    // A clause already stated by the differentiator must not come back in detail:
+    // the model refuses to repeat it, and a verbatim check would reject a correct answer.
+    const stated = normalizeText(differentiator);
+    const details = base.detail
+      .split(";")
+      .map((clause) => clause.trim())
+      .filter((clause) => clause && !stated.includes(normalizeText(clause)));
     for (const witness of witnesses) {
       const present = normalizeText(differentiator + details.join("; "));
       if (!present.includes(normalizeText(witness.phrase))
