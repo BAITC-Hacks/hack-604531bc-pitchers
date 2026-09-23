@@ -4,7 +4,7 @@
  */
 import { DATE_WINDOW, catalogueFacets, getContractors } from "./data.js";
 import { FILTER_REASONS, applyFilters, countExcluded, passesAll } from "./filters.js";
-import { scoreCandidates } from "./score.js";
+import { WEIGHTS, scoreCandidates } from "./score.js";
 
 const MAX_CARDS = 3;
 const HINT_WINDOW_DAYS = 14;
@@ -38,6 +38,7 @@ const inWindow = (date) => date >= DATE_WINDOW.min && date <= DATE_WINDOW.max;
 const formatDate = (date) => date.split("-").reverse().join(".");
 const formatMoney = (value) => `${String(value).replace(/\B(?=(\d{3})+(?!\d))/g, " ")} ₸`;
 const plural = (count, one, many) => (count % 10 === 1 && count % 100 !== 11 ? one : many);
+const round4 = (value) => Math.round(value * 1e4) / 1e4;
 
 // --- query validation ------------------------------------------------------
 
@@ -336,6 +337,90 @@ function withFactChips(card, query) {
 // --- common facts ----------------------------------------------------------
 
 /** What every shown card shares — the context the per-card differentiators are read against. */
+// --- ranking rationale -----------------------------------------------------
+
+const PART_LABELS = {
+  relevance: "совпадение с описанием",
+  budget: "запас бюджета",
+  specialization: "специализация",
+  hours: "часы",
+  dataQuality: "качество данных",
+};
+
+const hoursLabel = (value) => (value === null ? "без лимита" : `до ${value} ч`);
+
+const qualityLabel = (flags) => {
+  if (flags.synthetic) return "синтетический профиль";
+  if (flags.priceImputed && flags.cityImputed) return "город и цена восстановлены";
+  if (flags.priceImputed) return "цена оценочная";
+  if (flags.cityImputed) return "город уточнён";
+  return "данные полные";
+};
+
+/** The concrete fact behind a score component, so the comparison is checkable. */
+function partEvidence(part, ahead, behind) {
+  if (part === "budget") {
+    return `${formatMoney(ahead.priceFrom)} против ${formatMoney(behind.priceFrom)}`;
+  }
+  if (part === "relevance") {
+    const found = ahead.facts.matchedKeywords;
+    const other = behind.facts.matchedKeywords;
+    return other.length === 0
+      ? `упоминает ${found.map((word) => `«${word}»`).join(", ")}, у второй совпадений нет`
+      : `совпадений ${found.length} против ${other.length}`;
+  }
+  if (part === "specialization") {
+    const count = ahead.facts.formats.length;
+    return `${count} ${plural(count, "формат", "формата")} против ${behind.facts.formats.length}`;
+  }
+  if (part === "hours") return `${hoursLabel(ahead.facts.maxHours)} против ${hoursLabel(behind.facts.maxHours)}`;
+  return `${qualityLabel(ahead.flags)} против «${qualityLabel(behind.flags)}»`;
+}
+
+/**
+ * Why each shown card is ranked above the next one, in plain Russian.
+ * Positions instead of names, so the text stays usable with names hidden.
+ */
+function buildRankRationale(cards) {
+  const rationale = [];
+
+  for (let index = 1; index < cards.length; index += 1) {
+    const ahead = cards[index - 1];
+    const behind = cards[index];
+    const scoreDelta = round4(ahead.score - behind.score);
+
+    const contributions = Object.keys(WEIGHTS)
+      .map((part) => ({ part, delta: round4((ahead.scoreParts[part] - behind.scoreParts[part]) * WEIGHTS[part]) }))
+      .sort((a, b) => b.delta - a.delta || a.part.localeCompare(b.part));
+    const decisive = contributions.find((item) => item.delta > 0);
+    const equal = contributions.filter((item) => item.delta === 0).map((item) => item.part);
+
+    let text;
+    if (!decisive) {
+      text = `№${index} и №${index + 1} набрали одинаковый балл ${ahead.score} — порядок определён по id.`;
+    } else {
+      const label = PART_LABELS[decisive.part];
+      const values = `${ahead.scoreParts[decisive.part]} против ${behind.scoreParts[decisive.part]}`;
+      const same = equal.length > 0 ? ` Совпали: ${equal.map((part) => PART_LABELS[part]).join(", ")}.` : "";
+      text =
+        `№${index} впереди №${index + 1} на ${scoreDelta}: ${label} — ` +
+        `${partEvidence(decisive.part, ahead, behind)} (${values}).${same}`;
+    }
+
+    rationale.push({
+      ahead: ahead.id,
+      behind: behind.id,
+      scoreDelta,
+      decisivePart: decisive?.part ?? null,
+      text,
+    });
+  }
+
+  return rationale;
+}
+
+// --- common facts ----------------------------------------------------------
+
 function buildCommonFacts(cards, query) {
   if (cards.length === 0) return [];
   const facts = [`все свободны ${formatDate(query.date)}`, `все работают с форматом «${query.eventType}»`];
@@ -536,6 +621,7 @@ export function recommend(rawQuery, options = {}) {
       excludedList: [],
       cards: [],
       commonFacts: [],
+      rankRationale: [],
       otherCities,
       hints: {},
       actions: buildActions(query, {}, otherCities),
@@ -558,6 +644,7 @@ export function recommend(rawQuery, options = {}) {
     excludedList: buildExcludedList(excluded, query),
     cards,
     commonFacts: buildCommonFacts(cards, query),
+    rankRationale: buildRankRationale(cards),
     otherCities: [],
     hints,
     actions: buildActions(query, hints, []),

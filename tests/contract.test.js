@@ -17,7 +17,7 @@ const QUERIES = {
 
 const TOP_LEVEL = [
   "status", "query", "candidatesTotal", "excluded", "excludedList",
-  "cards", "commonFacts", "otherCities", "hints", "actions", "message",
+  "cards", "commonFacts", "rankRationale", "otherCities", "hints", "actions", "message",
 ];
 const CARD_FIELDS = ["id", "name", "categories", "city", "priceFrom", "flags", "score", "scoreParts", "facts", "factChips"];
 const FACT_FIELDS = [
@@ -54,6 +54,23 @@ test("cards carry every documented field, and differentiators are never empty", 
       }
     }
     assert.equal(result.commonFacts.length > 0, result.cards.length > 0, "commonFacts follow cards");
+  }
+});
+
+test("rankRationale explains every adjacent pair of shown cards", () => {
+  for (const query of Object.values(QUERIES)) {
+    const result = recommend(query);
+    assert.equal(result.rankRationale.length, Math.max(0, result.cards.length - 1));
+    result.rankRationale.forEach((item, index) => {
+      assert.equal(item.ahead, result.cards[index].id);
+      assert.equal(item.behind, result.cards[index + 1].id);
+      assert.ok(item.text.includes(`№${index + 1}`), `rationale ${index}: no position in text`);
+      assert.ok(item.scoreDelta >= 0, "cards are sorted by score desc");
+      // Names must stay out: the UI can hide them and the text must survive it.
+      for (const card of result.cards) {
+        assert.ok(!item.text.includes(card.name), `rationale leaks the name ${card.name}`);
+      }
+    });
   }
 });
 

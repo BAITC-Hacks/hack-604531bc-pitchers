@@ -102,6 +102,7 @@ EngineResult = {
   excludedList: [{ id, name, reason, detail }],  // every excluded candidate, reason order then id asc
   cards: [{ id, name, categories, city, priceFrom, flags, score, scoreParts, facts, factChips }],
   commonFacts: ["все свободны 17.10.2026", …],   // Russian, what ALL shown cards share; [] without cards
+  rankRationale: [{ ahead, behind, scoreDelta, decisivePart, text }],  // why card N outranks card N+1
   otherCities: [{ city, count }],        // for no_category
   hints: { nearestFreeDate?, minBudgetNeeded? },
   actions: [{ label, query }],           // ready-to-send follow-up queries, built from hints + otherCities
@@ -121,6 +122,11 @@ explain(EngineResult) -> same object, each card gets `explanation: string` and `
 `cards[].factChips` — 2–4 short strings derived from `facts` (price share of budget, differentiators,
 matched keywords, hours), deduplicated, in this order. They are UI labels; the explanation stays the
 main text of the card.
+
+`rankRationale` explains the ORDER, not the cards: one entry per adjacent pair, naming the score
+component that decided it and the fact behind it — «№1 впереди №2 на 0.0167: запас бюджета —
+900 000 ₸ против 1 000 000 ₸ (0.4 против 0.3333). Совпали: часы, специализация.» Positions, never
+names, so the text stays correct while the UI hides identities. Equal scores say so explicitly.
 
 `facts.differentiators` is **never empty**. Strict tags come first: `cheapest`, `onlyKazakh`,
 `noHourLimit`, `mostHours`, `mostSpecialized`, `onlyMentionsEventType`. When a card earns none of
