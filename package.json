@@ -6,8 +6,10 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
+    "preview": "node scripts/preview.js",
     "demo": "node scripts/demo.js",
-    "test": "node --test"
+    "test": "node --test src/ai/*.test.js tests/*.test.js",
+    "test:ui": "playwright test"
   },
   "repository": {
     "type": "git",
@@ -25,6 +27,10 @@
     "csv-parse": "^7.0.2",
     "dotenv": "^18.0.3",
     "express": "^5.2.1",
+    "lucide": "^1.47.0",
     "openai": "^7.23.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
   }
 }

@@ -88,12 +88,17 @@ export function cardEvidence(result) {
 }
 
 export function commonFacts(result) {
+  if (Array.isArray(result.commonFacts)) return [...result.commonFacts];
   if (!result.cards.length) return null;
   const { city, date, eventType, language, hours } = result.query;
   const parts = [city, `свободны по календарю на ${date.split("-").reverse().join(".")}`, `формат «${eventType}»`];
   if (language) parts.push(`язык: ${language}`);
   if (hours) parts.push(`подходят для запроса на ${hours} ч`);
   return { city, date, eventType, ...(language ? { language } : {}), ...(hours ? { hours } : {}), text: parts.join("; ") + "." };
+}
+
+export function commonFactsText(facts) {
+  return Array.isArray(facts) ? facts.join("; ") : facts?.text ?? "";
 }
 
 export function templateExplanation(facts, query, evidence = explanationEvidence(facts, query)) {

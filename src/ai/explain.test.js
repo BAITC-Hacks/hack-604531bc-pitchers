@@ -7,7 +7,7 @@ import { recommend } from "../engine/recommend.js";
 import { getContractors } from "../engine/data.js";
 import { CACHE_VERSION, cacheKey, createCache, hash } from "./cache.js";
 import { createExplainer, pairwiseDistinct, validExplanations } from "./explain.js";
-import { cardEvidence, commonFacts, templateExplanation, templateExplanations } from "./templates.js";
+import { cardEvidence, commonFacts, commonFactsText, templateExplanation, templateExplanations } from "./templates.js";
 
 const query = { city: "Алматы", date: "2026-10-17", eventType: "корпоратив", category: "Ведущий", budget: 1500000 };
 const memoryCache = () => createCache({ filePath: null });
@@ -106,7 +106,7 @@ test("busy date changes cards while engine counts and messages stay intact", asy
   assert.match(second.message, /занят/);
   for (const card of second.cards) {
     assert.ok(!getContractors().find((item) => item.id === card.id).busyDates.has(original.query.date));
-    assert.match(second.commonFacts.text, /26\.12\.2026/);
+    assert.match(commonFactsText(second.commonFacts), /26\.12\.2026/);
     assert.doesNotMatch(card.explanation, /26\.12\.2026/);
   }
 });
@@ -363,6 +363,8 @@ test("identical profile facts disclose missing evidence without inventing distin
 
 test("missing engine tags use distinct profile facts without changing the engine", () => {
   const original = fixture();
+  original.cards[1].facts.differentiators = [];
+  original.cards[2].facts.differentiators = [];
   const before = structuredClone(original);
   const evidence = cardEvidence(original);
   assert.equal(original.cards[1].facts.differentiators.length, 0);
@@ -371,7 +373,7 @@ test("missing engine tags use distinct profile facts without changing the engine
   assert.match(evidence[original.cards[2].id].differentiator, /8 ч/);
   assert.ok(Object.values(evidence).every((item) => item.distinguishable));
   assert.deepEqual(original, before);
-  assert.match(commonFacts(original).text, /17\.10\.2026/);
+  assert.match(commonFactsText(commonFacts(original)), /17\.10\.2026/);
 });
 
 test("temporary failure recovers to LLM and then survives a cache restart", async (t) => {

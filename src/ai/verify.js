@@ -9,6 +9,7 @@ process.env.LLM_MODEL = "http-verification-offline";
 
 const { app } = await import("../server.js");
 const { validExplanations } = await import("./explain.js");
+const { commonFacts: expectedCommonFacts } = await import("./templates.js");
 const server = app.listen(0, "127.0.0.1");
 await once(server, "listening");
 const baseURL = `http://127.0.0.1:${server.address().port}`;
@@ -47,13 +48,16 @@ try {
     assert.ok(result.message.trim());
     assert.ok(Number.isFinite(result.elapsedMs) && result.elapsedMs < 10000);
     const engine = recommend(query);
-    const { elapsedMs, ...withoutTiming } = result;
+    const { elapsedMs, commonFacts, ...withoutTiming } = result;
+    if (result.cards.length) assert.deepEqual(commonFacts, expectedCommonFacts(engine));
     const plainCards = result.cards.map(({ explanation, explanationSource, ...card }) => {
       assert.ok(["template", "cache"].includes(explanationSource));
       assert.ok(explanation.trim());
       return card;
     });
-    assert.deepEqual({ ...withoutTiming, cards: plainCards }, engine);
+    const { commonFacts: engineCommonFacts, ...engineWithoutCommonFacts } = engine;
+    assert.deepEqual({ ...withoutTiming, cards: plainCards }, engineWithoutCommonFacts);
+    assert.deepEqual(commonFacts, engineCommonFacts);
     assert.ok(validExplanations(Object.fromEntries(result.cards.map((card) => [card.id, card.explanation])), engine));
     const repeatedResponse = await request(query);
     assert.equal(repeatedResponse.status, 200);

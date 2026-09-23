@@ -1,69 +1,31 @@
 import "dotenv/config";
 import express from "express";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { catalogueFacets } from "./engine/data.js";
+import { catalogueFacets, getContractors } from "./engine/data.js";
+import { commonFacts, templateExplanations } from "./ai/templates.js";
 import { recommend, ValidationError } from "./engine/recommend.js";
 import { agentRouter } from "./agent/router.js";
 import { selfcheckRouter } from "./api/selfcheck.js";
+import { compareRouter } from "./api/compare.js";
 import { LlmUnavailableError } from "./agent/llm.js";
 
 const publicPath = fileURLToPath(new URL("../public/", import.meta.url));
-const money = (value) => `${value.toLocaleString("ru-RU")} ₸`;
-const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 const explanationModule = import("./ai/explain.js").catch(() => null);
 
-const differences = {
-  cheapest: () => "самая низкая стартовая цена среди показанных",
-  onlyKazakh: () => "единственный из показанных с казахским языком",
-  mostHours: (facts) => `самая большая длительность среди показанных — до ${facts.maxHours} ч`,
-  mostSpecialized: (facts) => `самая узкая специализация среди показанных: форматов — ${facts.formats.length}`,
-  onlyMentionsEventType: () => "единственный из показанных с ключевыми словами выбранного формата в описании",
-  noHourLimit: () => "не привязан к длительности присутствия, в отличие от части показанных",
-};
-
-function fallbackCard(card) {
-  const facts = card.facts;
-  const flags = facts.flags ?? card.flags ?? {};
-  const price = Number.isFinite(facts.priceFrom)
-    ? `${flags.priceImputed ? "оценочная стартовая цена" : "стартовая цена"} — от ${money(facts.priceFrom)}`
-    : "стартовая цена не указана";
-  const budget = Number.isFinite(facts.headroomKzt)
-    ? `; разница с бюджетом — ${money(facts.headroomKzt)}`
-    : "";
-  const first = `${flags.synthetic ? "Синтетический профиль: " : ""}${price}${budget}`;
-  const difference = (facts.differentiators ?? [])
-    .map((tag) => differences[tag]?.(facts))
-    .find(Boolean);
-  const hours = facts.maxHours === null
-    ? "без привязки к длительности присутствия"
-    : Number.isFinite(facts.maxHours) ? `до ${facts.maxHours} ч` : "";
-  const chips = (card.factChips ?? []).filter((chip) =>
-    typeof chip === "string" && chip.trim() && !chip.includes("₸") && !chip.startsWith("в описании:"),
-  );
-  // Prefer a real differentiator; a single card may have none to compare with.
-  const detail = difference ?? chips[0] ?? hours;
-  const includesHours = /\d+ ч|длительности присутствия|ограничения по часам/.test(detail);
-  const extra = hours && !includesHours ? hours : "";
-  const second = [detail, extra].filter(Boolean).join("; ");
-  return {
-    ...card,
-    explanation: `${capitalize(first)}.${second ? ` ${capitalize(second)}.` : ""}`,
-    explanationSource: "template",
-  };
+async function resolveExplanations(result) {
+  const module = await explanationModule;
+  if (typeof module?.explain !== "function") throw new Error("Explanation module unavailable");
+  return module.explain(result);
 }
 
-async function withExplanations(result) {
+export async function withExplanations(result, explainResult = resolveExplanations) {
   if (result.cards.length === 0) return result;
   let timeout;
   try {
     const explained = await Promise.race([
-      (async () => {
-        const module = await explanationModule;
-        if (typeof module?.explain !== "function") throw new Error("Explanation module unavailable");
-        return module.explain(structuredClone(result));
-      })(),
+      explainResult(structuredClone(result)),
       new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error("Explanation timeout")), 6000);
+        timeout = setTimeout(() => reject(new Error("Explanation timeout")), 9000);
       }),
     ]);
     const cards = result.cards.map((card) => {
@@ -74,9 +36,12 @@ async function withExplanations(result) {
       }
       return { ...card, explanation: enriched.explanation, explanationSource: enriched.explanationSource };
     });
-    return { ...result, cards };
+    return { ...result, commonFacts: explained.commonFacts ?? commonFacts(result), cards };
   } catch {
-    return { ...result, cards: result.cards.map(fallbackCard) };
+    const texts = templateExplanations(result);
+    return { ...result, commonFacts: commonFacts(result), cards: result.cards.map((card) => ({
+      ...card, explanation: texts[card.id], explanationSource: "template",
+    })) };
   } finally {
     clearTimeout(timeout);
   }
@@ -84,7 +49,7 @@ async function withExplanations(result) {
 
 export const app = express();
 // Load the catalogue once at startup, so missing/invalid data fails before listening.
-const facets = catalogueFacets();
+const facets = { ...catalogueFacets(), catalogue: { total: getContractors().length } };
 
 app.use(express.json());
 app.get("/api/meta", (_request, response) => response.json(facets));
@@ -95,6 +60,10 @@ app.post("/api/recommend", async (request, response) => {
 });
 app.use(agentRouter);
 app.use(selfcheckRouter);
+app.use(compareRouter);
+app.get("/vendor/lucide.js", (_request, response) => {
+  response.sendFile(fileURLToPath(new URL("../node_modules/lucide/dist/umd/lucide.min.js", import.meta.url)));
+});
 app.use(express.static(publicPath));
 
 app.use((error, _request, response, next) => {

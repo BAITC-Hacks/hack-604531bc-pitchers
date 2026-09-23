@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 import { recommend } from "../src/engine/recommend.js";
 import { createExplainer, pairwiseDistinct } from "../src/ai/explain.js";
 import { DEMO_SCENARIOS } from "../src/ai/scenarios.js";
+import { commonFactsText } from "../src/ai/templates.js";
 
 export function blindView(result) {
   const identities = result.cards.flatMap(({ id, name }) => [id, name]).filter(Boolean)
@@ -28,7 +29,7 @@ export async function runBlindTest({ live = false, explain, scenarios = DEMO_SCE
     const result = await explain(recommend(query));
     log(`\n${title}: ${result.status}`);
     log(result.message);
-    if (result.commonFacts) log(result.commonFacts.text);
+    if (result.cards.length) log(commonFactsText(result.commonFacts));
     if (!result.cards.length) {
       log("Карточек нет: проверка различимости не требуется.");
       continue;

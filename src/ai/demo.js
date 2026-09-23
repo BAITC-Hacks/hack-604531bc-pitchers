@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { recommend } from "../engine/recommend.js";
 import { createExplainer } from "./explain.js";
 import { DEMO_SCENARIOS } from "./scenarios.js";
+import { commonFactsText } from "./templates.js";
 
 const live = process.argv.includes("--live");
 const explain = createExplainer({
@@ -15,7 +16,7 @@ for (const { title, query } of DEMO_SCENARIOS) {
   const result = await explain(recommend(query));
   console.log(`\n${title}: ${result.status} (${Math.round(performance.now() - started)} мс)`);
   console.log(result.message);
-  if (result.commonFacts) console.log(result.commonFacts.text);
+  if (result.cards.length) console.log(commonFactsText(result.commonFacts));
   for (const card of result.cards) {
     console.log(`${card.name} (${card.id}), synthetic=${card.flags.synthetic}, ${card.explanationSource}`);
     console.log(card.explanation);

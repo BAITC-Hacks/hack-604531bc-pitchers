@@ -1,54 +1,332 @@
 <!doctype html>
 <html lang="ru">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#F1F2EE">
-  <title>pITchers — подбор подрядчиков</title>
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/styles.css">
-  <script src="/app.js" defer></script>
-</head>
-<body>
-  <header class="topbar">
-    <div class="topbar-inner"><a class="brand" href="/" aria-label="pITchers, главная">p<span>IT</span>chers<span class="brand-dot">.</span></a><p>Подрядчики для вашего мероприятия</p><span class="season">Сезон 2026</span></div>
-  </header>
-  <main class="layout">
-    <aside class="sidebar" aria-labelledby="search-title">
-      <h1 id="search-title">Начнём с мероприятия</h1>
-      <form id="parse-form" class="parse-form">
-        <label for="free-text">Опишите мероприятие словами</label>
-        <textarea id="free-text" name="text" rows="3" maxlength="4000" placeholder="Нужен ведущий на корпоратив в Алматы 17 октября, бюджет 1,5 млн ₸" required></textarea>
-        <button type="submit" class="secondary" disabled>Заполнить форму</button>
-        <p id="parse-feedback" class="notice" role="status" hidden></p>
-      </form>
-      <div class="section-label"><span>Параметры подбора</span></div>
-      <p id="meta-feedback" class="notice" role="status">Загружаем каталог…</p>
-      <button id="retry-meta" type="button" class="secondary" hidden>Повторить загрузку</button>
-      <form id="search-form">
-        <fieldset id="query-fields" disabled>
-          <div class="field"><label for="city">Город</label><select id="city" name="city" required><option value="">Выберите город</option></select></div>
-          <div class="field"><label for="date">Дата</label><input id="date" name="date" type="date" min="2026-09-23" max="2026-12-31" required><span class="field-note">23 сентября — 31 декабря 2026</span></div>
-          <div class="field"><label for="eventType">Тип мероприятия</label><select id="eventType" name="eventType" required><option value="">Выберите тип</option></select></div>
-          <div class="field"><label for="category">Категория</label><select id="category" name="category" required><option value="">Выберите категорию</option></select></div>
-          <div class="field"><label for="budget">Бюджет, ₸</label><input id="budget" name="budget" type="number" min="1" step="1" placeholder="1 500 000" required></div>
-          <div class="field-pair"><div class="field"><label for="hours">Длительность, ч</label><input id="hours" name="hours" type="number" min="0.5" step="0.5" placeholder="Неважно"></div><div class="field"><label for="language">Язык</label><select id="language" name="language"><option value="">Любой</option></select></div></div>
-          <button id="search-button" class="primary" type="submit">Подобрать подрядчиков <span aria-hidden="true">→</span></button>
-        </fieldset>
-      </form>
-      <section class="demos" aria-labelledby="demo-title"><h2 id="demo-title">Попробуйте готовый запрос</h2>
-        <button type="button" data-demo="0" disabled><span class="demo-number">01</span><span><strong>Плотная категория</strong><small>Ведущий · Алматы · корпоратив</small></span><span aria-hidden="true">↗</span></button>
-        <button type="button" data-demo="1" disabled><span class="demo-number">02</span><span><strong>Редкая категория</strong><small>Флорист · Алматы · свадьба</small></span><span aria-hidden="true">↗</span></button>
-        <button type="button" data-demo="2" disabled><span class="demo-number">03</span><span><strong>Без результата</strong><small>Декоратор · Астана · свадьба</small></span><span aria-hidden="true">↗</span></button>
-      </section>
-    </aside>
-    <section class="results-column" aria-labelledby="results-title">
-      <div class="results-heading"><div><p class="eyebrow">Ваше мероприятие, ваша команда</p><h2 id="results-title">Подходящие подрядчики</h2></div><label class="toggle"><input id="hide-names" type="checkbox"><span>Скрыть имена</span></label></div>
-      <div id="results" aria-live="polite" aria-busy="false">
-        <div class="empty-state"><div class="empty-symbol" aria-hidden="true">⌕</div><h3>Соберём команду под ваш запрос</h3><p>Укажите параметры мероприятия или выберите готовый запрос.</p><span class="empty-caption">До 3 вариантов с объяснением выбора</span></div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0d676b" />
+    <meta
+      name="description"
+      content="Подбор event-подрядчиков в Алматы и Астане по дате, формату и бюджету."
+    />
+    <title>pITchers | Подбор подрядчиков</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/vendor/lucide.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">К содержимому</a>
+    <aside class="sidebar" aria-label="Основная навигация">
+      <a class="brand" href="#search" aria-label="pITchers: подбор подрядчиков">
+        <span class="brand-symbol"><i data-lucide="asterisk"></i></span>
+        <span class="brand-word">pITchers<span>СОБЫТИЯ И ЛЮДИ</span></span>
+      </a>
+      <div class="workspace-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+      <nav class="main-nav">
+        <a
+          href="#search"
+          class="nav-link is-active"
+          data-view="search"
+          aria-current="page"
+          aria-label="Подбор"
+          ><i data-lucide="sliders-horizontal"></i
+          ><span class="nav-text">Подбор</span></a
+        >
+        <a
+          href="#saved"
+          class="nav-link"
+          data-view="saved"
+          aria-label="Избранное"
+          ><i data-lucide="bookmark"></i><span class="nav-text">Избранное</span
+          ><span class="saved-count" id="saved-count">0</span></a
+        >
+      </nav>
+      <div class="sidebar-season">
+        <div class="season-caption">
+          <span>СЕЗОН СОБЫТИЙ</span><i data-lucide="flower-2"></i>
+        </div>
+        <img
+          src="/assets/event-table.jpg"
+          alt="Банкетная сервировка с цветами"
+          width="640"
+          height="965"
+        />
+        <strong>Осень / зима 2026</strong>
+        <span>Алматы · Астана · Зарубежье</span>
       </div>
-      <noscript><p class="notice">Для подбора подрядчиков включите JavaScript в браузере.</p></noscript>
-    </section>
-  </main>
-</body>
+      <div class="sidebar-footer">
+        <span class="small-mark">p.</span>
+        <div>HackAlem AI<span>Креативные индустрии</span></div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="breadcrumb">
+          <span>Рабочее пространство</span><i data-lucide="chevron-right"></i
+          ><strong id="breadcrumb-view">Подбор</strong>
+        </div>
+        <span class="catalogue-status"><span></span>Демо-каталог</span>
+      </header>
+      <main id="main" class="main-content">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">ВАШЕ СОБЫТИЕ. ВАША КОМАНДА.</p>
+            <h1 id="page-title">
+              Подбор подрядчиков<span class="title-dot">.</span>
+            </h1>
+          </div>
+          <div class="catalogue-size">
+            <i data-lucide="users-round"></i
+            ><span
+              ><strong id="catalogue-total">...</strong> профилей в
+              каталоге</span
+            >
+          </div>
+        </div>
+
+        <div class="demo-bar search-only" aria-label="Демо-сценарии">
+          <span class="demo-label"><i data-lucide="play"></i>Демо-запросы</span>
+          <div class="demo-buttons">
+            <button
+              type="button"
+              data-demo="dense"
+              class="demo-button is-active"
+            >
+              <span class="demo-number">01</span>Плотная категория
+            </button>
+            <button type="button" data-demo="rare" class="demo-button">
+              <span class="demo-number">02</span>Редкая категория
+            </button>
+            <button type="button" data-demo="empty" class="demo-button">
+              <span class="demo-number">03</span>Без результата
+            </button>
+          </div>
+        </div>
+
+        <div class="matching-layout">
+          <aside class="filters search-only is-collapsed" id="filters">
+            <div class="filter-heading">
+              <h2><i data-lucide="sliders-horizontal"></i>Параметры события</h2>
+              <button
+                type="button"
+                class="icon-button mobile-filter-toggle"
+                id="toggle-filters"
+                aria-expanded="false"
+                aria-controls="filter-body"
+                aria-label="Развернуть параметры события"
+                title="Параметры события"
+              >
+                <i data-lucide="chevron-down"></i>
+              </button>
+            </div>
+            <div class="mobile-filter-summary" id="mobile-filter-summary">
+              Алматы · 17 октября
+            </div>
+            <div id="filter-body" class="filter-body">
+              <details class="brief-input">
+                <summary>
+                  <i data-lucide="message-square-text"></i>Описание события<i
+                    data-lucide="chevron-down"
+                  ></i>
+                </summary>
+                <form id="parse-form">
+                  <label for="free-text">Событие в свободной форме</label>
+                  <textarea
+                    id="free-text"
+                    rows="3"
+                    maxlength="4000"
+                    placeholder="Корпоратив в Алматы 17 октября, ведущий, бюджет 1,5 млн ₸"
+                    required
+                  ></textarea>
+                  <button
+                    type="submit"
+                    class="secondary-button"
+                    id="parse-button"
+                    disabled
+                  >
+                    <i data-lucide="sparkles"></i>Заполнить параметры
+                  </button>
+                  <p id="parse-feedback" role="status" hidden></p>
+                </form>
+              </details>
+              <form id="query-form">
+                <fieldset id="query-fields" disabled>
+                  <label class="field" for="city"
+                    ><span>Город</span
+                    ><span class="input-wrap"
+                      ><i data-lucide="map-pin"></i
+                      ><select
+                        id="city"
+                        name="city"
+                        required
+                        aria-label="Город"
+                      >
+                        <option value="">Загрузка...</option>
+                      </select></span
+                    ></label
+                  >
+                  <label class="field" for="date"
+                    ><span>Дата события</span
+                    ><input
+                      id="date"
+                      name="date"
+                      type="date"
+                      min="2026-09-23"
+                      max="2026-12-31"
+                      required
+                  /></label>
+                  <label class="field" for="eventType"
+                    ><span>Формат события</span
+                    ><select id="eventType" name="eventType" required>
+                      <option value="">Загрузка...</option>
+                    </select></label
+                  >
+                  <label class="field" for="category"
+                    ><span>Кого ищем</span
+                    ><select id="category" name="category" required>
+                      <option value="">Загрузка...</option>
+                    </select></label
+                  >
+                  <label class="field" for="budget"
+                    ><span>Бюджет до</span
+                    ><span class="input-wrap budget-wrap"
+                      ><input
+                        id="budget"
+                        name="budget"
+                        type="number"
+                        inputmode="numeric"
+                        min="1"
+                        max="1000000000"
+                        step="any"
+                        required
+                        value="1500000"
+                      /><span class="input-unit">₸</span></span
+                    ><small id="budget-caption"
+                      >1 500 000 ₸ за событие</small
+                    ></label
+                  >
+                  <details class="extra-filters">
+                    <summary>
+                      Дополнительно<i data-lucide="chevron-down"></i>
+                    </summary>
+                    <div>
+                      <label class="field" for="language"
+                        ><span>Язык</span
+                        ><select id="language" name="language">
+                          <option value="">Любой язык</option>
+                        </select></label
+                      >
+                      <label class="field" for="hours"
+                        ><span>Длительность, часов</span
+                        ><input
+                          id="hours"
+                          name="hours"
+                          type="number"
+                          inputmode="decimal"
+                          min="0.5"
+                          max="72"
+                          step="0.5"
+                          placeholder="Не указана"
+                      /></label>
+                    </div>
+                  </details>
+                  <button
+                    type="submit"
+                    class="primary-button search-button"
+                    id="search-button"
+                  >
+                    <i data-lucide="search"></i><span>Найти подрядчиков</span>
+                  </button>
+                  <p class="draft-status" id="draft-status" hidden>
+                    Параметры изменены
+                  </p>
+                </fieldset>
+              </form>
+              <div class="calendar-note">
+                <i data-lucide="calendar-days"></i
+                ><span
+                  >Календарь каталога<strong
+                    >23 сентября – 31 декабря 2026</strong
+                  ></span
+                >
+              </div>
+            </div>
+          </aside>
+
+          <section
+            class="results"
+            id="results"
+            aria-labelledby="results-title"
+            aria-busy="true"
+          >
+            <div class="results-heading">
+              <div>
+                <p class="section-kicker" id="results-kicker">
+                  ПЕРСОНАЛЬНАЯ ПОДБОРКА
+                </p>
+                <h2 id="results-title" tabindex="-1">Загружаем каталог</h2>
+              </div>
+              <div class="results-tools">
+                <label
+                  class="blind-toggle"
+                  title="Скрыть имена для слепого сравнения"
+                  ><input
+                    id="hide-names"
+                    type="checkbox"
+                    aria-label="Скрыть имена"
+                  /><i data-lucide="eye-off"></i
+                  ><span class="blind-label">Без имён</span></label
+                >
+                <span class="result-count" id="result-count" hidden></span
+                ><button
+                  type="button"
+                  class="icon-button"
+                  id="export-button"
+                  title="Скачать подборку JSON"
+                  aria-label="Скачать подборку JSON"
+                  hidden
+                >
+                  <i data-lucide="download"></i>
+                </button>
+              </div>
+            </div>
+            <div id="result-context" class="result-context" hidden></div>
+            <div
+              id="result-notice"
+              class="result-notice"
+              role="status"
+              aria-live="polite"
+              hidden
+            ></div>
+            <div id="cards" class="cards">
+              <div class="initial-loading">
+                <i data-lucide="loader-circle" class="spinning"></i
+                ><span>Загружаем доступные категории...</span>
+              </div>
+            </div>
+            <div id="result-actions" class="result-actions"></div>
+            <div id="exclusion-details" class="exclusion-details"></div>
+            <div id="result-footer" class="result-footer" hidden>
+              <span id="explanation-source"></span
+              ><span id="elapsed-time"></span>
+            </div>
+          </section>
+        </div>
+        <footer class="page-footer">
+          <span>pITchers · HackAlem AI 2026</span
+          ><span>Цены «от». Доступность по календарю каталога.</span>
+        </footer>
+      </main>
+    </div>
+    <dialog id="profile-dialog" aria-labelledby="profile-title">
+      <div id="profile-content"></div>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <noscript
+      ><div class="noscript-message">
+        Для подбора подрядчиков нужен JavaScript.
+      </div></noscript
+    >
+  </body>
 </html>
