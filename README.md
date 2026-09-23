@@ -55,6 +55,8 @@ npm start                 # сервер на http://localhost:3000
 curl http://localhost:3000/api/selfcheck
 ```
 
+Свежие цифры лежат в репозитории и читаются без запуска: [docs/selfcheck.md](docs/selfcheck.md) — отчёт живой самопроверки с датой прогона, [docs/metrics.md](docs/metrics.md) — метрики ядра на 918 запросах по всему каталогу. Оба файла пересобираются командой `node scripts/report.js`.
+
 `GET /api/selfcheck` на текущей версии возвращает 10 из 10:
 
 | Проверка | Результат |
