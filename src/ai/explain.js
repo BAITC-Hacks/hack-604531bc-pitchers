@@ -136,10 +136,12 @@ export function createExplainer(options = {}) {
     if (!pending.has(requestKey)) {
       pending.set(requestKey, (async () => {
         const generated = await generate(result);
-        memory.set(requestKey, generated.texts);
-        try {
-          if (cache.set(key, fingerprint, generated.texts) === false) report("cache_unavailable");
-        } catch { report("cache_unavailable"); }
+        if (generated.source === "llm") {
+          memory.set(requestKey, generated.texts);
+          try {
+            if (cache.set(key, fingerprint, generated.texts, generated.source) === false) report("cache_unavailable");
+          } catch { report("cache_unavailable"); }
+        }
         return generated;
       })());
     }

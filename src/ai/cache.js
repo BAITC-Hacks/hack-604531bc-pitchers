@@ -13,7 +13,8 @@ export function stableJson(value) {
 }
 
 export const hash = (value) => createHash("sha256").update(stableJson(value)).digest("hex");
-export const cacheKey = (query, cardIds, model) => hash({ query, cardIds, model });
+export const CACHE_VERSION = 2;
+export const cacheKey = (query, cardIds, model) => hash({ version: CACHE_VERSION, query, cardIds, model });
 
 export function createCache({ filePath = fileURLToPath(new URL("../../.cache/explanations.json", import.meta.url)) } = {}) {
   let entries;
@@ -23,7 +24,7 @@ export function createCache({ filePath = fileURLToPath(new URL("../../.cache/exp
     if (!filePath) return;
     try {
       const saved = JSON.parse(readFileSync(filePath, "utf8"));
-      if (saved.version === 1 && saved.entries && typeof saved.entries === "object" && !Array.isArray(saved.entries)) {
+      if (saved.version === CACHE_VERSION && saved.entries && typeof saved.entries === "object" && !Array.isArray(saved.entries)) {
         Object.assign(entries, saved.entries);
       }
     } catch {
@@ -34,16 +35,17 @@ export function createCache({ filePath = fileURLToPath(new URL("../../.cache/exp
     get(key, fingerprint) {
       load();
       const entry = entries[key];
-      return entry?.fingerprint === fingerprint ? structuredClone(entry.texts) : undefined;
+      return entry?.source === "llm" && entry.fingerprint === fingerprint ? structuredClone(entry.texts) : undefined;
     },
-    set(key, fingerprint, texts) {
+    set(key, fingerprint, texts, source) {
+      if (source !== "llm") return false;
       load();
-      entries[key] = { fingerprint, texts: structuredClone(texts) };
+      entries[key] = { fingerprint, texts: structuredClone(texts), source };
       if (!filePath) return true;
       const temporary = `${filePath}.${randomUUID()}.tmp`;
       try {
         mkdirSync(dirname(filePath), { recursive: true });
-        writeFileSync(temporary, JSON.stringify({ version: 1, entries }), { encoding: "utf8", flag: "wx" });
+        writeFileSync(temporary, JSON.stringify({ version: CACHE_VERSION, entries }), { encoding: "utf8", flag: "wx" });
         renameSync(temporary, filePath);
         return true;
       } catch {

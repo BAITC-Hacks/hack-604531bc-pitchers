@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recommend } from "../engine/recommend.js";
 import { getContractors } from "../engine/data.js";
-import { cacheKey, createCache } from "./cache.js";
+import { CACHE_VERSION, cacheKey, createCache, hash } from "./cache.js";
 import { createExplainer, validExplanations } from "./explain.js";
 import { templateExplanation, templateExplanations } from "./templates.js";
 
@@ -148,7 +148,7 @@ test("all documented differentiator tags produce concrete evidence", () => {
   }
 });
 
-test("API failures, invalid JSON and missing IDs fall back once and keep text stable", async () => {
+test("API failures never cache templates and subsequent requests retry", async () => {
   const original = fixture();
   for (const create of [
     async () => { throw Object.assign(new Error("secret error body"), { status: 401 }); },
@@ -162,15 +162,15 @@ test("API failures, invalid JSON and missing IDs fall back once and keep text st
       client: mockClient(async (...args) => { calls += 1; return create(...args); }) });
     const first = await explain(original);
     const second = await explain(original);
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
     assert.ok(first.cards.every((card) => card.explanationSource === "template"));
     assert.deepEqual(explanations(first), explanations(second));
-    assert.equal(reasons.length, 1);
+    assert.equal(reasons.length, 2);
     assert.ok(!JSON.stringify(reasons).includes("secret"));
   }
 });
 
-test("deadline aborts even a never-resolving API and persists the fallback", async () => {
+test("deadline aborts even a never-resolving API without caching fallback", async () => {
   let signal;
   const reasons = [];
   const explain = createExplainer({ timeoutMs: 20, cache: memoryCache(), onFallback: (reason) => reasons.push(reason),
@@ -201,7 +201,6 @@ test("default deadline resolves before the server fallback and keeps the repeate
   assert.equal(serverExpired, false);
   assert.ok(signal.aborted);
   assert.ok(first.cards.every((card) => card.explanationSource === "template"));
-  assert.deepEqual(explanations(await explain(fixture())), explanations(first));
   clearTimeout(serverDeadline);
 });
 
@@ -222,12 +221,14 @@ test("canonical cache key ignores property insertion order but respects date, ID
   assert.notEqual(cacheKey(query, ["A"], "mini"), cacheKey({ ...query, date: "2026-12-26" }, ["A"], "mini"));
   assert.notEqual(cacheKey(query, ["A", "B"], "mini"), cacheKey(query, ["B", "A"], "mini"));
   assert.notEqual(cacheKey(query, ["A"], "mini"), cacheKey(query, ["A"], "other"));
+  assert.notEqual(cacheKey(query, ["A"], "mini"), hash({ query, cardIds: ["A"], model: "mini" }));
 });
 
 test("file cache survives a new explainer and invalidates changed facts", async (t) => {
   const filePath = scratch(t);
   const original = fixture();
-  const first = await offline({ cache: createCache({ filePath }) })(original);
+  const first = await offline({ cache: createCache({ filePath }),
+    client: mockClient(async () => response(templateExplanations(original))) })(original);
   const second = await offline({ cache: createCache({ filePath }) })(original);
   assert.ok(second.cards.every((card) => card.explanationSource === "cache"));
   assert.deepEqual(explanations(first), explanations(second));
@@ -236,7 +237,9 @@ test("file cache survives a new explainer and invalidates changed facts", async 
   const third = await offline({ cache: createCache({ filePath }) })(changed);
   assert.equal(third.cards[0].explanationSource, "template");
   assert.notEqual(first.cards[0].explanation, third.cards[0].explanation);
-  assert.equal(JSON.parse(readFileSync(filePath, "utf8")).version, 1);
+  const saved = JSON.parse(readFileSync(filePath, "utf8"));
+  assert.equal(saved.version, CACHE_VERSION);
+  assert.ok(Object.values(saved.entries).every((entry) => entry.source === "llm"));
 });
 
 test("corrupt cache and unwritable paths never break results", async (t) => {
@@ -246,7 +249,8 @@ test("corrupt cache and unwritable paths never break results", async (t) => {
     const result = await offline({ cache: createCache({ filePath }) })(fixture());
     assert.ok(result.cards.every((card) => card.explanationSource === "template"));
   }
-  const explain = offline({ cache: createCache({ filePath: join(filePath, "impossible.json") }) });
+  const explain = offline({ cache: createCache({ filePath: join(filePath, "impossible.json") }),
+    client: mockClient(async () => response(templateExplanations(fixture()))) });
   const first = await explain(fixture());
   const second = await explain(fixture());
   assert.deepEqual(explanations(first), explanations(second));
@@ -275,6 +279,39 @@ test("templates remain valid across all source profiles and description shapes",
     assert.ok(validExplanations(explanations(first), result), JSON.stringify(first.cards));
     const second = await explain(result);
     assert.deepEqual(explanations(first), explanations(second));
-    assert.ok(second.cards.every((card) => card.explanationSource === "cache"));
+    assert.ok(second.cards.every((card) => card.explanationSource === "template"));
   }
+});
+
+test("temporary failure recovers to LLM and then survives a cache restart", async (t) => {
+  const filePath = scratch(t);
+  let calls = 0;
+  const original = fixture();
+  const explain = offline({ cache: createCache({ filePath }), client: mockClient(async () => {
+    if (++calls === 1) throw new Error("temporary outage");
+    return response(templateExplanations(original));
+  }) });
+  const first = await explain(original);
+  assert.equal(first.cards[0].explanationSource, "template");
+  assert.equal(existsSync(filePath), false);
+  assert.equal((await explain(original)).cards[0].explanationSource, "llm");
+  assert.equal((await explain(original)).cards[0].explanationSource, "cache");
+  assert.equal(calls, 2);
+  assert.equal((await offline({ cache: createCache({ filePath }) })(original)).cards[0].explanationSource, "cache");
+});
+
+test("cache rejects legacy, missing and template provenance", (t) => {
+  const filePath = scratch(t);
+  const texts = { A: "text" };
+  for (const source of [undefined, "template", "cache"]) {
+    const cache = createCache({ filePath: null });
+    assert.equal(cache.set("key", "fingerprint", texts, source), false);
+    assert.equal(cache.get("key", "fingerprint"), undefined);
+    writeFileSync(filePath, JSON.stringify({ version: CACHE_VERSION,
+      entries: { key: { fingerprint: "fingerprint", texts, source } } }));
+    assert.equal(createCache({ filePath }).get("key", "fingerprint"), undefined);
+  }
+  writeFileSync(filePath, JSON.stringify({ version: 1,
+    entries: { key: { fingerprint: "fingerprint", texts, source: "llm" } } }));
+  assert.equal(createCache({ filePath }).get("key", "fingerprint"), undefined);
 });
