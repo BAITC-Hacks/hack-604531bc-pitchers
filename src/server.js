@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { catalogueFacets } from "./engine/data.js";
 import { recommend, ValidationError } from "./engine/recommend.js";
 import { agentRouter } from "./agent/router.js";
+import { selfcheckRouter } from "./api/selfcheck.js";
 import { LlmUnavailableError } from "./agent/llm.js";
 
 const publicPath = fileURLToPath(new URL("../public/", import.meta.url));
@@ -93,6 +94,7 @@ app.post("/api/recommend", async (request, response) => {
   response.json({ ...result, elapsedMs: Math.round(performance.now() - started) });
 });
 app.use(agentRouter);
+app.use(selfcheckRouter);
 app.use(express.static(publicPath));
 
 app.use((error, _request, response, next) => {
