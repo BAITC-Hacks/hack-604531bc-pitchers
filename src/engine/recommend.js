@@ -3,7 +3,7 @@
  * Deterministic end to end — the same query always produces the same object.
  */
 import { DATE_WINDOW, catalogueFacets, getContractors } from "./data.js";
-import { applyFilters, countExcluded, passesAll } from "./filters.js";
+import { FILTER_REASONS, applyFilters, countExcluded, passesAll } from "./filters.js";
 import { scoreCandidates } from "./score.js";
 
 const MAX_CARDS = 3;
@@ -160,6 +160,32 @@ function differentiatorsFor(entry, shown) {
   return tags;
 }
 
+const DIFFERENTIATOR_CHIPS = {
+  cheapest: () => "самый доступный из показанных",
+  onlyKazakh: () => "единственный с казахским",
+  mostHours: (facts) => `больше всех часов — до ${facts.maxHours} ч`,
+  mostSpecialized: (facts) => `узкий профиль — ${facts.formats.length} ${plural(facts.formats.length, "формат", "формата")}`,
+  onlyMentionsEventType: (_facts, query) => `единственный упоминает «${query.eventType}»`,
+  noHourLimit: () => "без ограничения по часам",
+};
+
+/** 2–4 short strings for the card header. Price and hours are always available, so 2 is the floor. */
+function factChips(facts, query) {
+  const chips = [];
+  if (facts.priceFrom !== null) {
+    chips.push(`${formatMoney(facts.priceFrom)} — ${Math.round((facts.priceFrom / query.budget) * 100)}% бюджета`);
+  }
+  for (const tag of facts.differentiators) {
+    chips.push(DIFFERENTIATOR_CHIPS[tag](facts, query));
+  }
+  if (facts.matchedKeywords.length > 0) {
+    chips.push(`в описании: ${facts.matchedKeywords.slice(0, 2).join(", ")}`);
+  }
+  chips.push(facts.maxHours === null ? "без ограничения по часам" : `до ${facts.maxHours} ч`);
+
+  return [...new Set(chips)].slice(0, 4);
+}
+
 function buildCard(entry, shown, query) {
   const { contractor, score, scoreParts, matchedKeywords } = entry;
   const headroomKzt = contractor.priceFrom === null ? null : query.budget - contractor.priceFrom;
@@ -187,6 +213,63 @@ function buildCard(entry, shown, query) {
       differentiators: differentiatorsFor(entry, shown),
     },
   };
+}
+
+function withFactChips(card, query) {
+  return { ...card, factChips: factChips(card.facts, query) };
+}
+
+// --- excluded list ---------------------------------------------------------
+
+const LANGUAGE_IN = { "казахский": "на казахском", "русский": "на русском", "английский": "на английском" };
+
+const EXCLUSION_DETAIL = {
+  busy: (contractor, query) => `занят ${formatDate(query.date)}`,
+  over_budget: (contractor, query) =>
+    `от ${formatMoney(contractor.priceFrom)} при бюджете ${formatMoney(query.budget)}`,
+  format: (contractor, query) => `не берёт формат «${query.eventType}»`,
+  language: (contractor, query) =>
+    `не работает ${LANGUAGE_IN[query.language.toLowerCase()] ?? `на языке «${query.language}»`}`,
+  hours: (contractor, query) => `до ${contractor.maxHours} ч при нужных ${query.hours}`,
+};
+
+/** Every excluded candidate with its single reason, ordered by reason then by id. */
+function buildExcludedList(excluded, query) {
+  return excluded
+    .map(({ contractor, reason }) => ({
+      id: contractor.id,
+      name: contractor.name,
+      reason,
+      detail: EXCLUSION_DETAIL[reason](contractor, query),
+    }))
+    .sort(
+      (a, b) =>
+        FILTER_REASONS.indexOf(a.reason) - FILTER_REASONS.indexOf(b.reason) ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+}
+
+// --- actions ---------------------------------------------------------------
+
+/** Ready-to-send follow-up queries built from hints and otherCities. */
+function buildActions(query, hints, otherCities) {
+  const actions = [];
+  if (hints.nearestFreeDate) {
+    actions.push({
+      label: `Показать на ${formatDate(hints.nearestFreeDate)}`,
+      query: { ...query, date: hints.nearestFreeDate },
+    });
+  }
+  if (hints.minBudgetNeeded !== undefined && hints.minBudgetNeeded > query.budget) {
+    actions.push({
+      label: `Показать с бюджетом от ${formatMoney(hints.minBudgetNeeded)}`,
+      query: { ...query, budget: hints.minBudgetNeeded },
+    });
+  }
+  for (const { city, count } of otherCities) {
+    actions.push({ label: `Показать ${cityIn(city)} (${count})`, query: { ...query, city } });
+  }
+  return actions;
 }
 
 // --- hints -----------------------------------------------------------------
@@ -312,9 +395,11 @@ export function recommend(rawQuery, options = {}) {
       query,
       candidatesTotal: 0,
       excluded: countExcluded([]),
+      excludedList: [],
       cards: [],
       otherCities,
       hints: {},
+      actions: buildActions(query, {}, otherCities),
       message: buildMessage({ status: "no_category", query, candidatesTotal: 0, otherCities }),
     };
   }
@@ -329,9 +414,11 @@ export function recommend(rawQuery, options = {}) {
     query,
     candidatesTotal: candidates.length,
     excluded: countExcluded(excluded),
-    cards: shown.map((entry) => buildCard(entry, shown, query)),
+    excludedList: buildExcludedList(excluded, query),
+    cards: shown.map((entry) => withFactChips(buildCard(entry, shown, query), query)),
     otherCities: [],
     hints,
+    actions: buildActions(query, hints, []),
     message: buildMessage({
       status,
       query,

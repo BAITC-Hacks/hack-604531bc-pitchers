@@ -8,7 +8,7 @@ const QUERIES = [
   { title: "Плотная категория", city: "Алматы", date: "2026-10-17", eventType: "корпоратив", category: "Ведущий", budget: 1500000 },
   { title: "Та же категория в пик сезона", city: "Алматы", date: "2026-12-26", eventType: "корпоратив", category: "Ведущий", budget: 1500000 },
   { title: "Редкая категория", city: "Алматы", date: "2026-10-17", eventType: "свадьба", category: "Флорист", budget: 500000 },
-  { title: "Большой бюджет", city: "Алматы", date: "2026-12-19", eventType: "корпоратив", category: "Банкетный зал", budget: 100000000 },
+  { title: "Большой бюджет", city: "Алматы", date: "2026-12-19", eventType: "корпоратив", category: "Банкетный зал", budget: 3000000 },
   { title: "Категории нет в городе", city: "Астана", date: "2026-10-17", eventType: "свадьба", category: "Декоратор", budget: 1000000 },
 ];
 

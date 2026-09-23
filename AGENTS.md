@@ -99,13 +99,28 @@ EngineResult = {
   query,
   candidatesTotal: number,
   excluded: { busy, over_budget, format, language, hours },   // counts
-  cards: [{ id, name, categories, city, priceFrom, flags, score, scoreParts, facts }],
+  excludedList: [{ id, name, reason, detail }],  // every excluded candidate, reason order then id asc
+  cards: [{ id, name, categories, city, priceFrom, flags, score, scoreParts, facts, factChips }],
   otherCities: [{ city, count }],        // for no_category
   hints: { nearestFreeDate?, minBudgetNeeded? },
+  actions: [{ label, query }],           // ready-to-send follow-up queries, built from hints + otherCities
   message: "…"                           // Russian, deterministic, built by engine
 }
 explain(EngineResult) -> same object, each card gets `explanation: string` and `explanationSource: "llm" | "template" | "cache"`
 ```
+`excludedList[].detail` — one concrete Russian phrase per reason, all numbers taken from the data:
+`занят 17.10.2026` · `от 2 000 000 ₸ при бюджете 1 500 000 ₸` · `не берёт формат «той»`
+· `не работает на казахском` · `до 6 ч при нужных 8`.
+
+`actions[].query` is a complete Query the UI can send back unchanged:
+- `nearestFreeDate` → «Показать на 18.12.2026» (same query, new date);
+- `minBudgetNeeded` (only when above the asked budget) → «Показать с бюджетом от 650 000 ₸»;
+- each `otherCities` entry → «Показать в Алматы (3)» (same query, new city).
+
+`cards[].factChips` — 2–4 short strings derived from `facts` (price share of budget, differentiators,
+matched keywords, hours), deduplicated, in this order. They are UI labels; the explanation stays the
+main text of the card.
+
 Engine `message` examples (Russian, always concrete numbers):
 - partial: «Из 10 ведущих в Алматы 9 заняты 26.12.2026 — показываем единственного свободного.»
 - all_filtered: «В Алматы 8 банкетных залов, но ни один не подходит: 5 заняты на эту дату, 3 дороже бюджета. Ближайшая дата со свободным залом — 19.12.2026.»
