@@ -1,25 +1,11 @@
 /**
  * Deterministic scoring: no LLM, no randomness, no time-dependent input.
  * All components live in 0..1 and are rounded to 4 decimals before weighting.
+ * Keyword stems and weights come from config/domain.json.
  */
+import { KEYWORDS, WEIGHTS } from "./config.js";
 
-/** Lowercase stems per event type, straight from AGENTS.md. */
-export const KEYWORDS = {
-  "свадьба": ["свадьб", "венчан", "церемон", "молодожен"],
-  "той": ["той", "казахск", "национальн", "традиц", "узату", "беташар"],
-  "корпоратив": ["корпоратив", "компани", "тимбилд", "сотрудник", "новогодн"],
-  "конференция": ["конференц", "форум", "делов", "презентац", "спикер"],
-  "юбилей": ["юбилей", "годовщин"],
-  "день рождения": ["день рождени", "детск", "праздник"],
-};
-
-export const WEIGHTS = {
-  relevance: 0.35,
-  budget: 0.25,
-  specialization: 0.15,
-  hours: 0.15,
-  dataQuality: 0.1,
-};
+export { KEYWORDS, WEIGHTS };
 
 const round4 = (value) => Math.round(value * 1e4) / 1e4;
 const clamp01 = (value) => Math.min(1, Math.max(0, value));
