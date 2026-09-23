@@ -4,7 +4,8 @@
   "description": "Hackathon team repository for pITchers",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/server.js",
+    "demo": "node scripts/demo.js"
   },
   "repository": {
     "type": "git",
@@ -13,7 +14,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "bugs": {
     "url": "https://github.com/BAITC-Hacks/hack-604531bc-pitchers/issues"
   },
