@@ -183,6 +183,28 @@ test("deadline aborts even a never-resolving API and persists the fallback", asy
   assert.ok(result.cards.every((card) => card.explanationSource === "template"));
 });
 
+test("default deadline resolves before the server fallback and keeps the repeated text", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let serverExpired = false;
+  let signal;
+  let first;
+  const serverDeadline = setTimeout(() => { serverExpired = true; }, 6000);
+  const explain = createExplainer({ cache: memoryCache(), client: mockClient((_body, options) => {
+    signal = options.signal;
+    return new Promise(() => {});
+  }) });
+  const pending = explain(fixture()).then((result) => { first = result; });
+  t.mock.timers.tick(5500);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(first, "AI must finish before the server's 6-second deadline");
+  await pending;
+  assert.equal(serverExpired, false);
+  assert.ok(signal.aborted);
+  assert.ok(first.cards.every((card) => card.explanationSource === "template"));
+  assert.deepEqual(explanations(await explain(fixture())), explanations(first));
+  clearTimeout(serverDeadline);
+});
+
 test("content validator rejects generic phrases, invented numbers and missing evidence", () => {
   const original = fixture();
   const texts = templateExplanations(original);
