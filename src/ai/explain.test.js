@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { recommend } from "../engine/recommend.js";
 import { getContractors } from "../engine/data.js";
 import { CACHE_VERSION, cacheKey, createCache, hash } from "./cache.js";
-import { createExplainer, validExplanations } from "./explain.js";
+import { createExplainer, pairwiseDistinct, validExplanations } from "./explain.js";
 import { cardEvidence, commonFacts, templateExplanation, templateExplanations } from "./templates.js";
 
 const query = { city: "Алматы", date: "2026-10-17", eventType: "корпоратив", category: "Ведущий", budget: 1500000 };
@@ -151,11 +151,11 @@ test("all documented differentiator tags produce concrete evidence", () => {
 
 test("API failures never cache templates and subsequent requests retry", async () => {
   const original = fixture();
-  for (const create of [
-    async () => { throw Object.assign(new Error("secret error body"), { status: 401 }); },
-    async () => ({ choices: [{ finish_reason: "stop", message: { content: "not JSON" } }] }),
-    async () => response({}),
-    async () => ({ choices: [{ finish_reason: "length", message: { content: "{}" } }] }),
+  for (const [create, attempts] of [
+    [async () => { throw Object.assign(new Error("secret error body"), { status: 401 }); }, 1],
+    [async () => ({ choices: [{ finish_reason: "stop", message: { content: "not JSON" } }] }), 2],
+    [async () => response({}), 2],
+    [async () => ({ choices: [{ finish_reason: "length", message: { content: "{}" } }] }), 2],
   ]) {
     let calls = 0;
     const reasons = [];
@@ -163,7 +163,7 @@ test("API failures never cache templates and subsequent requests retry", async (
       client: mockClient(async (...args) => { calls += 1; return create(...args); }) });
     const first = await explain(original);
     const second = await explain(original);
-    assert.equal(calls, 2);
+    assert.equal(calls, attempts * 2);
     assert.ok(first.cards.every((card) => card.explanationSource === "template"));
     assert.deepEqual(explanations(first), explanations(second));
     assert.equal(reasons.length, 2);
@@ -189,7 +189,7 @@ test("default deadline allows eight seconds and then aborts the API", async (t) 
   let signal;
   let first;
   const explain = createExplainer({ cache: memoryCache(), client: mockClient((body, options) => {
-    assert.equal(options.timeout, 8000);
+    assert.ok(options.timeout > 7900 && options.timeout <= 8000);
     assert.equal(body.model, "gpt-4o-mini");
     signal = options.signal;
     return new Promise(() => {});
@@ -203,6 +203,55 @@ test("default deadline allows eight seconds and then aborts the API", async (t) 
   await pending;
   assert.ok(signal.aborted);
   assert.ok(first.cards.every((card) => card.explanationSource === "template"));
+});
+
+test("pairwise validation requires evidence in BOTH directions, not different wording", () => {
+  const original = fixture();
+  const texts = templateExplanations(original);
+  assert.ok(pairwiseDistinct(texts, original));
+  const [first, second, third] = original.cards;
+  assert.equal(pairwiseDistinct({ ...texts, [third.id]: texts[second.id] }, original), false);
+  assert.equal(pairwiseDistinct({ ...texts, [first.id]: "Подрядчик подходит по всем условиям." }, original), false);
+  const repeated = Object.fromEntries(original.cards.map((card) => [card.id, Object.values(texts).join(" ")]));
+  assert.equal(pairwiseDistinct(repeated, original), false);
+  const shared = structuredClone(original);
+  shared.cards[1].facts = structuredClone(shared.cards[0].facts);
+  assert.equal(pairwiseDistinct(templateExplanations(shared), shared), false);
+});
+
+test("one failed validation gets one repair and only the repaired LLM response is cached", async () => {
+  const original = fixture();
+  let calls = 0;
+  const explain = offline({ client: mockClient(async (body) => {
+    calls += 1;
+    if (calls === 1) return response({});
+    assert.equal(body.messages.length, 3);
+    assert.match(body.messages[2].content, /Проверка не пройдена/);
+    return response(templateExplanations(original));
+  }) });
+  assert.equal((await explain(original)).cards[0].explanationSource, "llm");
+  assert.equal((await explain(original)).cards[0].explanationSource, "cache");
+  assert.equal(calls, 2);
+});
+
+test("repair uses the remaining deadline, never another eight seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let calls = 0;
+  let signal;
+  const explain = offline({ client: mockClient((_body, options) => {
+    calls += 1;
+    signal = options.signal;
+    if (calls === 1) return new Promise((resolve) => setTimeout(() => resolve(response({})), 5000));
+    assert.equal(options.timeout, 3000);
+    return new Promise(() => {});
+  }) });
+  const pending = explain(fixture());
+  t.mock.timers.tick(5000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 2);
+  t.mock.timers.tick(3000);
+  assert.equal((await pending).cards[0].explanationSource, "template");
+  assert.equal(signal.aborted, true);
 });
 
 test("content validator rejects generic phrases, invented numbers and missing evidence", () => {
@@ -277,7 +326,9 @@ test("templates remain valid across all source profiles and description shapes",
       eventType: profile.formats[0], budget: Math.max(1000000, profile.priceFrom ?? 0),
       language: profile.languages[0], hours: profile.maxHours ?? 6 });
     const first = await explain(result);
-    assert.ok(validExplanations(explanations(first), result), JSON.stringify(first.cards));
+    const distinguishable = Object.values(cardEvidence(result)).every((item) => item.distinguishable);
+    assert.equal(validExplanations(explanations(first), result), distinguishable, JSON.stringify(first.cards));
+    if (!distinguishable) assert.ok(first.cards.every((card) => card.explanationSource === "template"));
     const second = await explain(result);
     assert.deepEqual(explanations(first), explanations(second));
     assert.ok(second.cards.every((card) => card.explanationSource === "template"));

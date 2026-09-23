@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import { cacheKey, createCache, hash } from "./cache.js";
-import { cardEvidence, commonFacts, forbiddenPhrase, formatMoney, templateExplanations } from "./templates.js";
+import { cardEvidence, commonFacts, differsFrom, forbiddenPhrase, formatMoney, profileWitnesses, templateExplanations } from "./templates.js";
 
 dotenv.config({ path: fileURLToPath(new URL("../../.env", import.meta.url)), quiet: true });
 
@@ -33,6 +33,25 @@ function numbers(text) {
     .map((item) => Number(item.replace(",", "."))));
 }
 
+export function pairwiseDistinct(texts, result) {
+  return result.cards.every((card) => result.cards.every((other) => {
+    if (card.id === other.id) return true;
+    const own = texts?.[card.id];
+    const peer = texts?.[other.id];
+    if (typeof own !== "string" || typeof peer !== "string") return false;
+    return profileWitnesses(card.facts).some((witness) => {
+      if (!differsFrom(witness, other.facts)) return false;
+      if (witness.kind === "quote") {
+        const quote = fold(`«${witness.value}»`);
+        return fold(own).includes(quote) && !fold(peer).includes(fold(witness.value));
+      }
+      return numbers(own).has(witness.value) && !numbers(peer).has(witness.value)
+        && (fold(own).includes(fold(witness.phrase))
+          || (witness.field === "maxHours" && fold(own).includes(`${witness.value} ч`)));
+    });
+  }));
+}
+
 export function validExplanations(texts, result) {
   if (!texts || typeof texts !== "object" || Array.isArray(texts)) return false;
   if (Object.keys(texts).length !== result.cards.length) return false;
@@ -56,7 +75,7 @@ export function validExplanations(texts, result) {
     const prose = text.replace(/«[^»]*»/g, "").replace(/(?<=\d)\.(?=\d)/g, "");
     if (prose.split(/[.!?]+(?:\s+|$)/).filter((part) => part.trim()).length > 2) return false;
   }
-  return true;
+  return pairwiseDistinct(texts, result);
 }
 
 export function createExplainer(options = {}) {
@@ -79,6 +98,7 @@ export function createExplainer(options = {}) {
       return { texts: fallback, source: "template" };
     }
     const controller = new AbortController();
+    const deadline = Date.now() + timeoutMs;
     let timer;
     try {
       client ??= new OpenAI({ apiKey, baseURL, timeout: timeoutMs, maxRetries: 0 });
@@ -86,26 +106,31 @@ export function createExplainer(options = {}) {
       const payload = { query: result.query, commonFacts: commonFacts(result), cards: result.cards.map(({ id, facts }) => ({
         id, facts, evidence: evidence[id],
       })) };
-      const response = await Promise.race([
-        client.chat.completions.create({
-          model, temperature: 0, response_format: { type: "json_object" }, max_tokens: 1400,
-          messages: [{ role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: JSON.stringify(payload) }],
-        }, { signal: controller.signal, timeout: timeoutMs, maxRetries: 0 }),
-        new Promise((_resolve, reject) => {
-          timer = setTimeout(() => {
-            const error = new Error("timeout");
-            error.code = "timeout";
-            reject(error);
-            controller.abort();
-          }, timeoutMs);
-        }),
-      ]);
-      const choice = response.choices?.[0];
-      if (choice?.finish_reason !== "stop") throw new Error("invalid_response");
-      const texts = JSON.parse(choice.message.content);
-      if (!validExplanations(texts, result)) throw new Error("invalid_response");
-      return { texts, source: "llm" };
+      const messages = [{ role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: JSON.stringify(payload) }];
+      // Both attempts share one deadline, not eight seconds per attempt.
+      const expired = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const error = Object.assign(new Error("timeout"), { code: "timeout" });
+          reject(error);
+          controller.abort();
+        }, timeoutMs);
+      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw Object.assign(new Error("timeout"), { code: "timeout" });
+        const response = await Promise.race([
+          client.chat.completions.create({
+            model, temperature: 0, response_format: { type: "json_object" }, max_tokens: 1100, messages,
+          }, { signal: controller.signal, timeout: remaining, maxRetries: 0 }), expired,
+        ]);
+        const choice = response.choices?.[0];
+        let texts;
+        try { texts = JSON.parse(choice?.message?.content); } catch { /* One repair attempt below. */ }
+        if (choice?.finish_reason === "stop" && validExplanations(texts, result)) return { texts, source: "llm" };
+        messages.push({ role: "user", content: "Проверка не пройдена. Исправь JSON для всех ID: начни с evidence.differentiator, включи evidence.detail; у КАЖДОЙ карточки должна быть своя подтверждённая цифра или точная цитата, отсутствующая в КАЖДОЙ другой. Не повторяй commonFacts, соблюдай 1–2 предложения и признаки синтетических данных." });
+      }
+      throw new Error("invalid_response");
     } catch (error) {
       const reason = error.code === "timeout" ? "timeout" : error.status === 401 ? "authentication"
         : error.message === "invalid_response" || error instanceof SyntaxError ? "invalid_response" : "api_error";
