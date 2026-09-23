@@ -2,6 +2,7 @@ const moneyFormatter = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2
 
 export const formatMoney = (value) => moneyFormatter.format(value).replace(/\u00a0/g, " ");
 export const forbiddenPhrase = /отличный выбор|идеальн(?:ый выбор|о подойд[её]т)|прекрасно подойд[её]т|профессионал своего дела/iu;
+export const normalizeText = (text) => text.toLocaleLowerCase("ru").replace(/ё/g, "е").replace(/\s+/g, " ").trim();
 
 function snippetFrom(facts) {
   let text = String(facts.descriptionSnippet ?? "").replace(/\s+/g, " ").trim();
@@ -40,7 +41,60 @@ export function explanationEvidence(facts, query) {
   return { differentiator, detail };
 }
 
-export function templateExplanation(facts, query) {
+export function profileWitnesses(facts) {
+  const result = [];
+  if (Number.isFinite(facts.maxHours)) {
+    result.push({ kind: "number", field: "maxHours", value: facts.maxHours, phrase: `лимит присутствия ${facts.maxHours} ч` });
+  }
+  const snippet = snippetFrom(facts);
+  if (snippet) result.push({ kind: "quote", value: snippet, phrase: `в описании: «${snippet}»` });
+  if (Number.isFinite(facts.priceFrom)) {
+    result.push({ kind: "number", field: "priceFrom", value: facts.priceFrom,
+      phrase: `${facts.flags.priceImputed ? "оценочная цена" : "цена"} от ${formatMoney(facts.priceFrom)} ₸` });
+  }
+  return result;
+}
+
+export function differsFrom(witness, facts) {
+  return witness.kind === "quote"
+    ? !normalizeText(String(facts.descriptionSnippet ?? "")).includes(normalizeText(witness.value))
+    : facts[witness.field] !== witness.value;
+}
+
+export function cardEvidence(result) {
+  return Object.fromEntries(result.cards.map((card) => {
+    const peers = result.cards.filter((other) => other.id !== card.id);
+    const available = profileWitnesses(card.facts);
+    const witnesses = [];
+    for (const peer of peers) {
+      if (witnesses.some((witness) => differsFrom(witness, peer.facts))) continue;
+      const witness = available.find((item) => differsFrom(item, peer.facts));
+      if (witness) witnesses.push(witness);
+    }
+    const base = explanationEvidence(card.facts, result.query);
+    const differentiator = base.differentiator || witnesses[0]?.phrase || (peers.length
+      ? "различия по имеющимся фактам не подтверждены" : available[0]?.phrase || base.detail);
+    const details = [base.detail];
+    for (const witness of witnesses) {
+      if (!normalizeText(differentiator + details.join("; ")).includes(normalizeText(witness.phrase))) {
+        details.push(witness.phrase);
+      }
+    }
+    return [card.id, { differentiator, detail: details.join("; "), witnesses,
+      distinguishable: peers.every((peer) => witnesses.some((witness) => differsFrom(witness, peer.facts))) }];
+  }));
+}
+
+export function commonFacts(result) {
+  if (!result.cards.length) return null;
+  const { city, date, eventType, language, hours } = result.query;
+  const parts = [city, `свободны по календарю на ${date.split("-").reverse().join(".")}`, `формат «${eventType}»`];
+  if (language) parts.push(`язык: ${language}`);
+  if (hours) parts.push(`подходят для запроса на ${hours} ч`);
+  return { city, date, eventType, ...(language ? { language } : {}), ...(hours ? { hours } : {}), text: parts.join("; ") + "." };
+}
+
+export function templateExplanation(facts, query, evidence = explanationEvidence(facts, query)) {
   const date = query.date.split("-").reverse().join(".");
   const prefix = facts.flags.synthetic ? "Синтетический профиль; " : "";
   const price = Number.isFinite(facts.priceFrom)
@@ -52,11 +106,12 @@ export function templateExplanation(facts, query) {
   if (query.hours) {
     details.push(facts.maxHours === null ? "работа не привязана к часам присутствия" : `лимит ${facts.maxHours} ч при запросе ${query.hours} ч`);
   }
-  const { differentiator, detail } = explanationEvidence(facts, query);
+  const { differentiator, detail } = evidence;
   const sentences = [prefix + details.join(", "), [differentiator, detail].filter(Boolean).join("; ")];
   return sentences.map((text) => text.charAt(0).toUpperCase() + text.slice(1) + ".").join(" ");
 }
 
 export function templateExplanations(result) {
-  return Object.fromEntries(result.cards.map(({ id, facts }) => [id, templateExplanation(facts, result.query)]));
+  const evidence = cardEvidence(result);
+  return Object.fromEntries(result.cards.map(({ id, facts }) => [id, templateExplanation(facts, result.query, evidence[id])]));
 }

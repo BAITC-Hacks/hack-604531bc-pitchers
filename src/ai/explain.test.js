@@ -7,7 +7,7 @@ import { recommend } from "../engine/recommend.js";
 import { getContractors } from "../engine/data.js";
 import { CACHE_VERSION, cacheKey, createCache, hash } from "./cache.js";
 import { createExplainer, validExplanations } from "./explain.js";
-import { templateExplanation, templateExplanations } from "./templates.js";
+import { cardEvidence, commonFacts, templateExplanation, templateExplanations } from "./templates.js";
 
 const query = { city: "Алматы", date: "2026-10-17", eventType: "корпоратив", category: "Ведущий", budget: 1500000 };
 const memoryCache = () => createCache({ filePath: null });
@@ -53,6 +53,7 @@ test("one LLM call sees only query, IDs and facts for all cards", async () => {
     assert.ok(options.signal instanceof AbortSignal);
     const payload = JSON.parse(body.messages[1].content);
     assert.deepEqual(payload.query, original.query);
+    assert.deepEqual(payload.commonFacts, commonFacts(original));
     assert.equal(payload.cards.length, 3);
     for (const card of payload.cards) {
       assert.deepEqual(Object.keys(card).sort(), ["evidence", "facts", "id"]);
@@ -211,7 +212,7 @@ test("content validator rejects generic phrases, invented numbers and missing ev
   for (const changed of [null, [], {}, { ...texts, extra: "unexpected" }, { ...texts, [id]: 3 },
     { ...texts, [id]: "Отличный выбор для мероприятия." },
     { ...texts, [id]: texts[id] + " Получил 987654 наград." },
-    { ...texts, [id]: texts[id].replace("Свободен по календарю", "Занят") }]) {
+    { ...texts, [id]: texts[id].replace(cardEvidence(original)[id].detail, "Факты отсутствуют") }]) {
     assert.equal(validExplanations(changed, original), false);
   }
 });
@@ -281,6 +282,19 @@ test("templates remain valid across all source profiles and description shapes",
     assert.deepEqual(explanations(first), explanations(second));
     assert.ok(second.cards.every((card) => card.explanationSource === "template"));
   }
+});
+
+test("missing engine tags use distinct profile facts without changing the engine", () => {
+  const original = fixture();
+  const before = structuredClone(original);
+  const evidence = cardEvidence(original);
+  assert.equal(original.cards[1].facts.differentiators.length, 0);
+  assert.equal(original.cards[2].facts.differentiators.length, 0);
+  assert.match(evidence[original.cards[1].id].differentiator, /6 ч/);
+  assert.match(evidence[original.cards[2].id].differentiator, /8 ч/);
+  assert.ok(Object.values(evidence).every((item) => item.distinguishable));
+  assert.deepEqual(original, before);
+  assert.match(commonFacts(original).text, /17\.10\.2026/);
 });
 
 test("temporary failure recovers to LLM and then survives a cache restart", async (t) => {

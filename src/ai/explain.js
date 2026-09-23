@@ -2,20 +2,22 @@ import OpenAI from "openai";
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import { cacheKey, createCache, hash } from "./cache.js";
-import { explanationEvidence, forbiddenPhrase, formatMoney, templateExplanations } from "./templates.js";
+import { cardEvidence, commonFacts, forbiddenPhrase, formatMoney, templateExplanations } from "./templates.js";
 
 dotenv.config({ path: fileURLToPath(new URL("../../.env", import.meta.url)), quiet: true });
 
 export const SYSTEM_PROMPT = `Ты объясняешь подбор event-подрядчиков на русском.
 Вход содержит только query и факты карточек с ID. Верни JSON-объект
 {"<id>": "<объяснение>"}, ровно по одному тексту для каждого переданного ID.
-Для каждой карточки напиши ровно 2 коротких предложения из переданных фактов.
-Первое: свободен по календарю на дату, формат, цена ОТ (цифры с пробелами между
-тысячами, знак ₸), остаток бюджета; если указаны язык и часы, объясни совпадение.
+Для каждой карточки напиши 1–2 коротких предложения из переданных фактов.
+Каждое объяснение НАЧИНАЙ дословно с evidence.differentiator, первую букву сделай заглавной.
+Затем включи дословно evidence.detail и хотя бы одну свою цифру или цитату из evidence.witnesses,
+которой нет у остальных карточек. Эти отличия вычислены только из facts показанных карточек.
+Не повторяй общую дату, город, соответствие формату, языку и запрошенным часам:
+они уже вынесены в commonFacts и показываются над карточками один раз.
+Укажи цену ОТ (цифры с пробелами между тысячами, знак ₸).
 Если цена null, напиши «цена не указана», не обещай соответствие бюджету.
-Второе: дословно обязательные фразы evidence.differentiator (если не пуста)
-и evidence.detail, разделённые точкой с запятой. Начальную букву можно сделать заглавной.
-Это индивидуальная причина выбора; не выдумывай уникальность, если differentiator пуст.
+Не добавляй общий каркас «свободен, формат, цена». При distinguishable=false не выдумывай отличие.
 flags.synthetic=true: обязательно «Синтетический профиль», это демонстрационные
 данные, а не реальный проверенный подрядчик. flags.priceImputed=true: цена «оценочная».
 maxHours=null означает работу без привязки к присутствию, а не бесконечную смену.
@@ -34,12 +36,13 @@ function numbers(text) {
 export function validExplanations(texts, result) {
   if (!texts || typeof texts !== "object" || Array.isArray(texts)) return false;
   if (Object.keys(texts).length !== result.cards.length) return false;
+  const evidence = cardEvidence(result);
   for (const { id, facts } of result.cards) {
     const text = texts[id];
     if (typeof text !== "string" || text.length < 20 || text.length > 1200 || /[\r\n]/.test(text)) return false;
     if (forbiddenPhrase.test(text) || !/[а-яё]/iu.test(text)) return false;
     const normalized = fold(text);
-    const { differentiator, detail } = explanationEvidence(facts, result.query);
+    const { differentiator, detail } = evidence[id];
     if (!normalized.includes(fold(detail)) || (differentiator && !normalized.includes(fold(differentiator)))) return false;
     if (Number.isFinite(facts.priceFrom)) {
       if (!normalized.includes(`от ${formatMoney(facts.priceFrom)} ₸`)) return false;
@@ -47,9 +50,6 @@ export function validExplanations(texts, result) {
     } else if (!normalized.includes("цена не указана")) return false;
     if (facts.flags.synthetic && !normalized.includes("синтетический профиль")) return false;
     const date = result.query.date.split("-").reverse().join(".");
-    if (!normalized.includes(date) || !normalized.includes("свободен по календарю")) return false;
-    if (!normalized.includes(fold(result.query.eventType))) return false;
-    if (result.query.language && !normalized.includes(fold(result.query.language))) return false;
     const allowedNumbers = numbers(JSON.stringify({ query: result.query, facts, differentiator, detail }) + date);
     if ([...numbers(text)].some((number) => !allowedNumbers.has(number))) return false;
     // Ignore quoted profile text and date/decimal dots when counting sentences.
@@ -82,8 +82,9 @@ export function createExplainer(options = {}) {
     let timer;
     try {
       client ??= new OpenAI({ apiKey, baseURL, timeout: timeoutMs, maxRetries: 0 });
-      const payload = { query: result.query, cards: result.cards.map(({ id, facts }) => ({
-        id, facts, evidence: explanationEvidence(facts, result.query),
+      const evidence = cardEvidence(result);
+      const payload = { query: result.query, commonFacts: commonFacts(result), cards: result.cards.map(({ id, facts }) => ({
+        id, facts, evidence: evidence[id],
       })) };
       const response = await Promise.race([
         client.chat.completions.create({
@@ -121,7 +122,7 @@ export function createExplainer(options = {}) {
     // Keep the agreed key while rejecting stale facts, prompts and provider data.
     const fingerprint = hash({ facts: result.cards.map(({ facts }) => facts), baseURL, prompt: SYSTEM_PROMPT });
     const requestKey = `${key}:${fingerprint}`;
-    const attach = (texts, source) => ({ ...result, cards: result.cards.map((card) => ({
+    const attach = (texts, source) => ({ ...result, commonFacts: commonFacts(result), cards: result.cards.map((card) => ({
       ...card, explanation: texts[card.id], explanationSource: source,
     })) });
     let cached = memory.get(requestKey);
