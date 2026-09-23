@@ -2,10 +2,10 @@ import { Router } from "express";
 import { DATE_WINDOW, getContractors } from "../engine/data.js";
 import { recommend } from "../engine/recommend.js";
 import { compareDates } from "../engine/compare.js";
+import { forbiddenPhrase } from "../ai/templates.js";
 
 // A missing AI module must not prevent the server's recommendation fallback from starting.
 const aiModule = import("../ai/explain.js").catch(() => null);
-const forbiddenPhrase = /отличный выбор|идеальн(?:ый выбор|о подойд[её]т)|прекрасно подойд[её]т|профессионал своего дела/iu;
 
 const REQUEST_LIMIT_MS = 10000;
 const DEMO = { city: "Алматы", date: "2026-10-17", eventType: "корпоратив", category: "Ведущий", budget: 1500000 };

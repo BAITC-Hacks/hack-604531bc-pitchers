@@ -158,9 +158,15 @@ const client = new OpenAI({ apiKey: process.env.LLM_API_KEY, baseURL: process.en
 ```
 
 ## API (src/server.js)
-- `GET  /api/meta` → `{ cities, categories, eventTypes, languages, dateRange }` built from data.
+- `GET  /api/meta` → `{ cities, categories, eventTypes, languages, dateRange, catalogue: { total } }` built from data.
 - `POST /api/recommend` body = Query → EngineResult after explain + `elapsedMs`. Validation errors → 400 with Russian message.
+- `POST /api/compare` (src/api/compare.js) body = `{ query, date2 }` → `{ a, b, diff: { droppedOut, newcomers }, message, elapsedMs }`,
+  both results explained; a failing explanation layer degrades to cards without `explanation`.
+- `GET  /api/selfcheck` (src/api/selfcheck.js) → array of 10 `{ id, title, passed, detail, ms }` — the case
+  requirements verified against live data.
+- `POST /api/parse`, `GET /api/parse/status` (src/agent/) → free-text query parsing; 503 when no LLM key.
 - Serve `/public` statically. Target response < 10 s.
+- Request/response examples for every endpoint: `docs/api.md`.
 
 ## UI (public/) — clean and minimal, explanations first
 - Form: city, date (min 2026-09-23, max 2026-12-31), event type, category, budget ₸; optional hours, language.
