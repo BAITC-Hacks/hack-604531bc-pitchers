@@ -183,25 +183,25 @@ test("deadline aborts even a never-resolving API without caching fallback", asyn
   assert.ok(result.cards.every((card) => card.explanationSource === "template"));
 });
 
-test("default deadline resolves before the server fallback and keeps the repeated text", async (t) => {
+test("default deadline allows eight seconds and then aborts the API", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  let serverExpired = false;
   let signal;
   let first;
-  const serverDeadline = setTimeout(() => { serverExpired = true; }, 6000);
-  const explain = createExplainer({ cache: memoryCache(), client: mockClient((_body, options) => {
+  const explain = createExplainer({ cache: memoryCache(), client: mockClient((body, options) => {
+    assert.equal(options.timeout, 8000);
+    assert.equal(body.model, "gpt-4o-mini");
     signal = options.signal;
     return new Promise(() => {});
-  }) });
+  }), model: "gpt-4o-mini" });
   const pending = explain(fixture()).then((result) => { first = result; });
-  t.mock.timers.tick(5500);
+  t.mock.timers.tick(7999);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.ok(first, "AI must finish before the server's 6-second deadline");
+  assert.equal(first, undefined);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(1);
   await pending;
-  assert.equal(serverExpired, false);
   assert.ok(signal.aborted);
   assert.ok(first.cards.every((card) => card.explanationSource === "template"));
-  clearTimeout(serverDeadline);
 });
 
 test("content validator rejects generic phrases, invented numbers and missing evidence", () => {

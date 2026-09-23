@@ -63,8 +63,7 @@ export function createExplainer(options = {}) {
   const apiKey = options.apiKey ?? (process.env.LLM_API_KEY || process.env.OPENAI_API_KEY);
   const model = options.model ?? (process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini");
   const baseURL = options.baseURL ?? (process.env.LLM_BASE_URL || process.env.OPENAI_BASE_URL || undefined);
-  // Return our cached fallback before the server's independent 6-second deadline.
-  const timeoutMs = Math.min(5500, Math.max(1, options.timeoutMs ?? 5500));
+  const timeoutMs = Math.min(8000, Math.max(1, options.timeoutMs ?? 8000));
   const cache = options.cache ?? createCache();
   const memory = new Map();
   const pending = new Map();
