@@ -1,871 +1,752 @@
 "use strict";
 
-const $ = (selector) => document.querySelector(selector);
-const money = (value) =>
-  new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(value);
-const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
-const dateLabel = (value) =>
-  new Intl.DateTimeFormat("ru-RU", {
-    day: "numeric",
-    month: "long",
-    timeZone: "UTC",
-  }).format(new Date(`${value}T00:00:00Z`));
-const DEFAULT_QUERY = {
-  city: "Алматы",
-  date: "2026-10-17",
-  eventType: "корпоратив",
-  category: "Ведущий",
-  budget: 1500000,
-};
-const DEMOS = {
-  dense: DEFAULT_QUERY,
-  rare: {
-    ...DEFAULT_QUERY,
-    category: "Флорист",
-    eventType: "свадьба",
-    budget: 500000,
+const form = document.querySelector("#search-form");
+const parseForm = document.querySelector("#parse-form");
+const results = document.querySelector("#results");
+const fields = document.querySelector("#query-fields");
+const parseFeedback = document.querySelector("#parse-feedback");
+const formFeedback = document.querySelector("#form-feedback");
+const metaFeedback = document.querySelector("#meta-feedback");
+const retryMeta = document.querySelector("#retry-meta");
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const queryFields = ["city", "date", "eventType", "category", "budget", "hours", "language"];
+const demos = [
+  {
+    city: "Алматы",
+    date: "2026-10-17",
+    eventType: "корпоратив",
+    category: "Ведущий",
+    budget: 1500000,
   },
-  empty: { ...DEFAULT_QUERY, date: "2026-12-25", budget: 100000 },
+  { city: "Алматы", date: "2026-10-17", eventType: "свадьба", category: "Флорист", budget: 500000 },
+  {
+    city: "Астана",
+    date: "2026-10-17",
+    eventType: "свадьба",
+    category: "Декоратор",
+    budget: 1000000,
+  },
+];
+const statuses = {
+  found: { label: "Подрядчики найдены", icon: "circle-check" },
+  partial: { label: "Есть несколько вариантов", icon: "circle-alert" },
+  no_category: { label: "В городе нет этой категории", icon: "map-pin" },
+  all_filtered: { label: "Нужно изменить условия", icon: "list-filter" },
 };
-const STORAGE_KEY = "pitchers.saved.v1";
-const REASONS = {
-  busy: "Заняты на дату",
-  over_budget: "Дороже бюджета",
+const reasons = {
+  busy: "Заняты на эту дату",
+  over_budget: "Выше бюджета",
   format: "Другой формат",
-  language: "Другой язык",
-  hours: "Не хватает часов",
+  language: "Не подходит язык",
+  hours: "Не подходит длительность",
 };
-const SOURCES = {
-  llm: "AI-объяснения",
-  cache: "AI-объяснения из кэша",
-  template: "По фактам каталога",
-};
-const state = {
-  meta: null,
-  result: null,
-  view: location.hash === "#saved" ? "saved" : "search",
-  saved: {},
-  loading: false,
-  error: null,
-  requestId: 0,
-  hideNames: false,
-};
-let controller;
-let toastTimer;
-let formRevision = 0;
+const scoreParts = [
+  ["relevance", "Смысл описания", 35],
+  ["budget", "Бюджет", 25],
+  ["specialization", "Специализация", 15],
+  ["hours", "Часы", 15],
+  ["dataQuality", "Качество данных", 10],
+];
+const money = (value) => `${new Intl.NumberFormat("ru-RU").format(value)} ₸`;
+const dateLabel = (value) => String(value).split("-").reverse().join(".");
+let activeActions = [];
+let lastQuery = null;
+let busy = false;
+let ready = false;
+let identities = [];
+let namePattern = null;
 
-function visibleText(text) {
-  if (!state.hideNames) return text;
-  const profiles = [
-    ...(state.result?.cards ?? []),
-    ...(state.result?.excludedList ?? []),
-    ...Object.values(state.saved).map(({ card }) => card),
-  ];
-  const identities = [
-    ...new Set(profiles.flatMap(({ id, name }) => [id, name]).filter(Boolean)),
-  ].sort((a, b) => b.length - a.length);
-  return identities.reduce(
-    (value, identity) => value.replaceAll(identity, "[имя скрыто]"),
-    String(text),
-  );
-}
-
-function node(tag, className = "", text) {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
-  return element;
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
 }
 
 function icon(name) {
-  const element = node("i");
-  element.dataset.lucide = name;
-  element.setAttribute("aria-hidden", "true");
-  return element;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "icon");
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#icon-${name}`);
+  svg.append(use);
+  return svg;
 }
 
-function refreshIcons() {
-  window.lucide?.createIcons({
-    attrs: { "aria-hidden": "true", focusable: "false" },
-  });
+function notice(node, text = "", tone = "info") {
+  node.querySelector(".notice").textContent = text;
+  node.classList.toggle("is-visible", Boolean(text));
+  node.dataset.tone = tone;
+  node.setAttribute("aria-hidden", String(!text));
 }
 
-function actionButton(text, iconName, handler, className = "secondary-button") {
-  const button = node("button", className);
-  button.type = "button";
-  if (iconName) button.append(icon(iconName));
-  if (text) button.append(node("span", "", text));
-  button.addEventListener("click", handler);
-  return button;
-}
-
-function announce(text) {
-  clearTimeout(toastTimer);
-  $("#toast").textContent = text;
-  $("#toast").hidden = false;
-  toastTimer = setTimeout(() => {
-    $("#toast").hidden = true;
-  }, 3500);
-}
-
-function loadSaved() {
+async function request(path, body) {
+  let response;
   try {
-    const entries = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-    if (!Array.isArray(entries)) return;
-    for (const entry of entries.slice(0, 100)) {
-      const card = entry?.card;
-      if (
-        typeof card?.id === "string" &&
-        typeof card.name === "string" &&
-        typeof card.explanation === "string" &&
-        Array.isArray(card.categories) &&
-        Array.isArray(card.facts?.languages) &&
-        Array.isArray(card.facts?.formats) &&
-        card.flags &&
-        /^\d{4}-\d{2}-\d{2}$/.test(entry.query?.date) &&
-        Number.isFinite(Date.parse(entry.query.date))
-      ) {
-        state.saved[card.id] = entry;
-      }
-    }
+    response = await fetch(path, {
+      signal: AbortSignal.timeout(30000),
+      ...(body === undefined
+        ? {}
+        : {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }),
+    });
   } catch {
-    /* Storage may be unavailable or contain an older schema. */
+    throw new Error("Сервер не отвечает. Проверьте соединение и попробуйте ещё раз.");
   }
-}
-
-function updateSavedButtons() {
-  $("#saved-count").textContent = Object.keys(state.saved).length;
-  document.querySelectorAll("[data-save-id]").forEach((button) => {
-    const saved = Boolean(state.saved[button.dataset.saveId]);
-    const label = saved ? "Убрать из избранного" : "Добавить в избранное";
-    button.setAttribute("aria-pressed", String(saved));
-    button.setAttribute("aria-label", label);
-    button.title = label;
-    button.replaceChildren(icon(saved ? "bookmark-check" : "bookmark"));
-    if (button.dataset.showLabel)
-      button.append(node("span", "", saved ? "В избранном" : "В избранное"));
-  });
-  refreshIcons();
-}
-
-function toggleSaved(card, query) {
-  const removed = Boolean(state.saved[card.id]);
-  if (removed) delete state.saved[card.id];
-  else state.saved[card.id] = { card, query };
-  let persisted = true;
+  let data;
   try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify(Object.values(state.saved)),
-    );
+    data = await response.json();
   } catch {
-    persisted = false;
+    throw new Error("Не удалось прочитать ответ сервера. Попробуйте ещё раз.");
   }
-  if (state.view === "saved") renderSaved();
-  updateSavedButtons();
-  announce(
-    persisted
-      ? removed
-        ? "Карточка удалена из избранного"
-        : "Карточка добавлена в избранное"
-      : "Избранное сохранено только до закрытия страницы",
-  );
+  if (!response.ok) {
+    const error = new Error(data.error || "Не удалось выполнить запрос. Попробуйте ещё раз.");
+    error.status = response.status;
+    throw error;
+  }
+  return data;
 }
 
-function saveButton(card, query, withLabel = false) {
-  const button = actionButton(
-    "",
-    "bookmark",
-    () => toggleSaved(card, query),
-    withLabel ? "primary-button" : "icon-button",
-  );
-  button.dataset.saveId = card.id;
-  if (withLabel) button.dataset.showLabel = "true";
-  return button;
-}
-
-function flagList(card) {
-  const list = node("div", "flag-list");
-  if (card.flags.synthetic)
-    list.append(node("span", "badge", "Синтетический профиль"));
-  if (card.flags.priceImputed)
-    list.append(node("span", "badge", "Цена оценочная"));
-  if (card.flags.cityImputed)
-    list.append(node("span", "badge badge-neutral", "Город уточнён"));
-  list.hidden = !list.childElementCount;
-  return list;
-}
-
-function renderCard(card, query, index) {
-  const article = node("article", "vendor-card");
-  article.dataset.id = card.id;
-  const top = node("div", "card-top");
-  top.append(
-    node("span", "rank", String(index + 1).padStart(2, "0")),
-    saveButton(card, query),
-  );
-  const identity = node("div", "card-identity");
-  const displayName = state.hideNames
-    ? `Подрядчик ${String.fromCharCode(65 + index)}`
-    : card.name;
-  const initials = state.hideNames
-    ? String.fromCharCode(65 + index)
-    : card.name
-        .split(/\s+/)
-        .slice(0, 2)
-        .map((word) => word[0])
-        .join("");
-  const avatar = node("div", "avatar", initials);
-  avatar.setAttribute("aria-hidden", "true");
-  identity.append(avatar, node("h3", "", displayName));
-  const meta = node(
-    "p",
-    "card-meta",
-    `${card.categories.join(", ")} · ${card.city}`,
-  );
-  identity.append(meta, flagList(card));
-  const reason = node("div", "card-reason");
-  const reasonLabel = node("div", "reason-label");
-  reasonLabel.append(icon("sparkles"), node("span", "", "Почему в подборке"));
-  reason.append(
-    reasonLabel,
-    node("p", "explanation", visibleText(card.explanation)),
-  );
-  const facts = node("ul", "card-facts");
-  const hours = node("li");
-  hours.append(
-    icon("clock-3"),
-    node(
-      "span",
-      "",
-      card.facts.maxHours === null
-        ? "Без привязки к часам"
-        : `До ${card.facts.maxHours} ч на событии`,
-    ),
-  );
-  const language = node("li");
-  language.append(
-    icon("languages"),
-    node(
-      "span",
-      "",
-      card.facts.languages.map(capitalize).join(", ") || "Языки не указаны",
-    ),
-  );
-  facts.append(hours, language);
-  if (state.view === "saved") {
-    const date = node("li");
-    date.append(
-      icon("calendar-days"),
-      node("span", "", `Подборка на ${dateLabel(query.date)}`),
-    );
-    facts.append(date);
-  }
-  const bottom = node("div", "card-bottom");
-  const price = node("div", "card-price");
-  if (Number.isFinite(card.priceFrom))
-    price.append(
-      node("span", "", "от"),
-      document.createTextNode(`${money(card.priceFrom)} ₸`),
-    );
-  else price.textContent = "Цена не указана";
-  const profile = actionButton(
-    "Профиль",
-    null,
-    () => openProfile(card, query, displayName),
-    "profile-button",
-  );
-  profile.append(icon("arrow-up-right"));
-  bottom.append(price, profile);
-  article.append(top, identity, reason, facts, bottom);
-  return article;
-}
-
-function openProfile(card, query, displayName = card.name) {
-  const content = $("#profile-content");
-  content.replaceChildren();
-  const header = node("div", "dialog-header");
-  header.append(
-    node(
-      "p",
-      "",
-      state.hideNames ? "ПРОФИЛЬ КАТАЛОГА" : `ПРОФИЛЬ КАТАЛОГА · ${card.id}`,
-    ),
-  );
-  const close = actionButton(
-    "",
-    "x",
-    () => $("#profile-dialog").close(),
-    "icon-button",
-  );
-  close.setAttribute("aria-label", "Закрыть профиль");
-  close.title = "Закрыть профиль";
-  header.append(close);
-  const body = node("div", "dialog-body");
-  const title = node("h2", "", displayName);
-  title.id = "profile-title";
-  body.append(
-    title,
-    node("p", "card-meta", `${card.categories.join(", ")} · ${card.city}`),
-    flagList(card),
-  );
-  body.append(node("p", "dialog-explanation", visibleText(card.explanation)));
-  const data = node("dl", "profile-data");
-  const fields = [
-    [
-      "Соответствие запросу",
-      Number.isFinite(card.score)
-        ? `${(card.score * 100).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} из 100`
-        : "Не указано",
-    ],
-    [
-      "Стоимость за событие",
-      Number.isFinite(card.priceFrom)
-        ? `От ${money(card.priceFrom)} ₸${card.flags.priceImputed ? " (оценочная)" : ""}`
-        : "Не указана",
-    ],
-    ["Дата подбора", `${dateLabel(query.date)} 2026`],
-    ["Языки", card.facts.languages.map(capitalize).join(", ") || "Не указаны"],
-    [
-      "Длительность",
-      card.facts.maxHours === null
-        ? "Без привязки к присутствию"
-        : `До ${card.facts.maxHours} ч`,
-    ],
-    ["Форматы", card.facts.formats.map(capitalize).join(", ")],
-    [
-      "Источник объяснения",
-      SOURCES[card.explanationSource] || "По фактам каталога",
-    ],
-  ];
-  for (const [label, value] of fields) {
-    const pair = node("div");
-    pair.append(node("dt", "", label), node("dd", "", value));
-    data.append(pair);
-  }
-  body.append(data);
-  if (card.factChips?.length) {
-    const chips = node("div", "profile-chips");
-    for (const chip of card.factChips)
-      chips.append(node("span", "profile-chip", visibleText(chip)));
-    body.append(chips);
-  }
-  if (card.facts.descriptionSnippet) {
-    const description = node("div", "profile-description");
-    description.append(
-      node("h3", "", "Из описания профиля"),
-      node("p", "", visibleText(card.facts.descriptionSnippet)),
-    );
-    body.append(description);
-  }
-  const footer = node("div", "dialog-footer");
-  footer.append(
-    node("small", "", "Контакты и бронирование отсутствуют в демо-каталоге."),
-    saveButton(card, query, true),
-  );
-  content.append(header, body, footer);
-  updateSavedButtons();
-  $("#profile-dialog").showModal();
-}
-
-function resetResults() {
-  for (const id of [
-    "cards",
-    "result-context",
-    "result-notice",
-    "result-actions",
-    "exclusion-details",
-  ])
-    $(`#${id}`).replaceChildren();
-  for (const id of [
-    "result-context",
-    "result-notice",
-    "result-footer",
-    "export-button",
-    "result-count",
-  ])
-    $(`#${id}`).hidden = true;
-}
-
-function renderLoading() {
-  resetResults();
-  $("#results").setAttribute("aria-busy", "true");
-  $("#results-title").textContent = "Собираем подборку";
-  $("#results-kicker").textContent = "ПЕРСОНАЛЬНАЯ ПОДБОРКА";
-  for (let i = 0; i < 3; i += 1) {
-    const card = node("div", "skeleton-card");
-    card.setAttribute("aria-hidden", "true");
-    card.append(
-      node("div", "skeleton-avatar"),
-      node("div", "skeleton-line short"),
-      node("div", "skeleton-line"),
-      node("div", "skeleton-gap"),
-    );
-    for (let j = 0; j < 5; j += 1)
-      card.append(node("div", `skeleton-line${j === 4 ? " short" : ""}`));
-    $("#cards").append(card);
-  }
-}
-
-function emptyState(iconName, heading, text) {
-  const box = node("div", "empty-state");
-  const mark = node("span", "empty-icon");
-  mark.append(icon(iconName));
-  box.append(mark, node("h3", "", heading), node("p", "", text));
-  return box;
-}
-
-function renderError() {
-  resetResults();
-  $("#results").setAttribute("aria-busy", "false");
-  $("#results-title").textContent = "Не удалось получить подборку";
-  const notice = $("#result-notice");
-  notice.hidden = false;
-  notice.dataset.state = "error";
-  notice.textContent = state.error;
-  const empty = emptyState(
-    "wifi-off",
-    "Запрос не завершён",
-    "Параметры события сохранены.",
-  );
-  empty.append(
-    actionButton("Повторить запрос", "rotate-cw", () =>
-      state.meta ? submitForm() : initialize(),
-    ),
-  );
-  $("#cards").append(empty);
-  refreshIcons();
-}
-
-function renderResults() {
-  if (state.view !== "search") return;
-  if (state.loading) {
-    renderLoading();
-    refreshIcons();
-    return;
-  }
-  if (state.error) {
-    renderError();
-    return;
-  }
-  const result = state.result;
-  if (!result) return;
-  resetResults();
-  $("#results").setAttribute("aria-busy", "false");
-  const titles = {
-    found: "3 подходящих подрядчика",
-    partial:
-      result.cards.length === 1 ? "Найден 1 подрядчик" : "Найдены 2 подрядчика",
-    no_category: "Категории нет в городе",
-    all_filtered: "Пока нет совпадений",
-  };
-  $("#results-title").textContent = titles[result.status];
-  $("#results-kicker").textContent = "ПЕРСОНАЛЬНАЯ ПОДБОРКА";
-  $("#result-count").hidden = false;
-  $("#result-count").textContent = result.cards.length;
-  const notice = $("#result-notice");
-  notice.hidden = result.status === "found";
-  notice.dataset.state = result.status;
-  notice.textContent = result.message;
-  const commonText = Array.isArray(result.commonFacts)
-    ? result.commonFacts.join("; ")
-    : result.commonFacts?.text;
-  if (commonText && result.cards.length) {
-    $("#result-context").hidden = false;
-    $("#result-context").append(
-      icon("circle-check"),
-      node("span", "", commonText),
-    );
-  }
-  result.cards.forEach((card, index) =>
-    $("#cards").append(renderCard(card, result.query, index)),
-  );
-  if (!result.cards.length) {
-    const noCategory = result.status === "no_category";
-    const text = noCategory
-      ? `${result.query.category} · ${result.query.city}`
-      : `${result.query.category} · ${dateLabel(result.query.date)} · до ${money(result.query.budget)} ₸`;
-    const empty = emptyState(
-      noCategory ? "map-pinned" : "calendar-search",
-      noCategory
-        ? "В каталоге нет этой категории"
-        : "По этим условиям нет свободных профилей",
-      text,
-    );
-    const breakdown = node("div", "reason-breakdown");
-    for (const [key, count] of Object.entries(result.excluded)) {
-      if (!count) continue;
-      const badge = node("span", "reason-count");
-      badge.append(
-        node("b", "", count),
-        document.createTextNode(REASONS[key] || key),
-      );
-      breakdown.append(badge);
-    }
-    empty.append(breakdown);
-    $("#cards").append(empty);
-  }
-  for (const action of result.actions || []) {
-    $("#result-actions").append(
-      actionButton(action.label, "arrow-right", () => {
-        setForm(action.query);
-        markActiveDemo(null);
-        requestRecommendations(action.query);
-      }),
-    );
-  }
-  if (result.excludedList?.length) {
-    const details = node("details");
-    const summary = node("summary");
-    summary.append(
-      icon("chevron-down"),
-      node(
-        "span",
-        "",
-        `Почему не вошли остальные · ${result.excludedList.length}`,
-      ),
-    );
-    const list = node("ul", "exclusion-list");
-    for (const excluded of result.excludedList) {
-      const item = node("li");
-      item.append(
-        node("span", "", visibleText(excluded.name)),
-        node("span", "", excluded.detail),
-      );
-      list.append(item);
-    }
-    details.append(summary, list);
-    $("#exclusion-details").append(details);
-  }
-  if (result.cards.length) {
-    $("#export-button").hidden = false;
-    $("#result-footer").hidden = false;
-    const sources = [
-      ...new Set(
-        result.cards.map(
-          (card) => SOURCES[card.explanationSource] || SOURCES.template,
-        ),
-      ),
-    ];
-    $("#explanation-source").replaceChildren(
-      icon("database"),
-      node("span", "", sources.join(" · ")),
-    );
-    $("#elapsed-time").textContent =
-      `${(result.elapsedMs / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} с`;
-  }
-  updateSavedButtons();
-}
-
-function renderSaved() {
-  resetResults();
-  $("#results").setAttribute("aria-busy", "false");
-  $("#results-kicker").textContent = "ВАШ СПИСОК";
-  $("#results-title").textContent = "Сохранённые подрядчики";
-  const entries = Object.values(state.saved);
-  $("#result-count").hidden = false;
-  $("#result-count").textContent = entries.length;
-  $("#export-button").hidden = !entries.length;
-  entries.forEach(({ card, query }, index) =>
-    $("#cards").append(renderCard(card, query, index)),
-  );
-  if (!entries.length) {
-    const empty = emptyState(
-      "bookmark",
-      "Избранное пока пусто",
-      "Здесь пока нет сохранённых подрядчиков.",
-    );
-    empty.append(
-      actionButton("Перейти к подбору", "arrow-right", () => {
-        location.hash = "search";
-      }),
-    );
-    $("#cards").append(empty);
-  }
-  updateSavedButtons();
-}
-
-function setView(view) {
-  state.view = view;
-  const saved = view === "saved";
-  $(".workspace").classList.toggle("is-saved", saved);
-  document.querySelectorAll(".search-only").forEach((element) => {
-    element.hidden = saved;
+function setBusy(value, operation = "search") {
+  busy = value;
+  fields.disabled = !ready || value;
+  document.querySelector("#search-button").disabled = !ready || value;
+  parseForm.querySelector("button").disabled = !ready || value;
+  document.querySelector("#free-text").disabled = value;
+  parseForm.setAttribute("aria-busy", String(value && operation === "parse"));
+  document.querySelectorAll("[data-demo], [data-action], [data-retry]").forEach((button) => {
+    button.disabled = !ready || value;
   });
-  document.querySelectorAll("[data-view]").forEach((link) => {
-    const active = link.dataset.view === view;
-    link.classList.toggle("is-active", active);
-    if (active) link.setAttribute("aria-current", "page");
-    else link.removeAttribute("aria-current");
-  });
-  $("#page-title").replaceChildren(
-    document.createTextNode(
-      saved ? "Избранные подрядчики" : "Подбор подрядчиков",
-    ),
-    node("span", "title-dot", "."),
-  );
-  $("#breadcrumb-view").textContent = saved ? "Избранное" : "Подбор";
-  if (saved) renderSaved();
-  else renderResults();
+  document.querySelector("#search-button-label").textContent =
+    value && operation === "search" ? "Подбираем подрядчиков…" : "Найти подрядчиков";
+  document.querySelector("#parse-button-label").textContent =
+    value && operation === "parse" ? "Разбираем описание…" : "Подобрать";
 }
 
-function markActiveDemo(name) {
-  document.querySelectorAll("[data-demo]").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.demo === name);
-    button.setAttribute("aria-pressed", String(button.dataset.demo === name));
-  });
-}
-
-function updateBudgetCaption() {
-  const value = Number($("#budget").value);
-  $("#budget-caption").textContent =
-    Number.isFinite(value) && value > 0
-      ? `${money(value)} ₸ за событие`
-      : "Бюджет за одно событие";
-}
-
-function setForm(query) {
-  formRevision += 1;
-  for (const key of [
-    "city",
-    "date",
-    "eventType",
-    "category",
-    "budget",
-    "language",
-    "hours",
-  ])
-    $(`#${key}`).value = query[key] ?? "";
-  $("#mobile-filter-summary").textContent =
-    `${query.city} · ${dateLabel(query.date)} · ${capitalize(query.eventType)}`;
-  if (query.hours || query.language) $(".extra-filters").open = true;
-  $("#draft-status").hidden = true;
-  updateBudgetCaption();
-}
-
-function readForm() {
-  const data = new FormData($("#query-form"));
-  const query = Object.fromEntries(data.entries());
-  query.budget = Number(query.budget);
-  if (query.hours) query.hours = Number(query.hours);
-  else delete query.hours;
-  if (!query.language) delete query.language;
+function readQuery() {
+  const query = {};
+  for (const name of queryFields) {
+    const value = form.elements.namedItem(name).value;
+    if (value !== "") query[name] = ["budget", "hours"].includes(name) ? Number(value) : value;
+  }
   return query;
 }
 
-async function requestRecommendations(query) {
-  const requestId = ++state.requestId;
-  controller?.abort();
-  controller = new AbortController();
-  const signal = controller.signal;
-  const timeout = setTimeout(
-    () => controller?.signal === signal && controller.abort(),
-    11000,
-  );
-  state.loading = true;
-  state.error = null;
-  $("#draft-status").hidden = true;
-  $("#mobile-filter-summary").textContent =
-    `${query.city} · ${dateLabel(query.date)} · ${capitalize(query.eventType)}`;
-  renderResults();
-  try {
-    const response = await fetch("/api/recommend", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(query),
-      signal,
-    });
-    const result = await response.json();
-    if (!response.ok)
-      throw new Error(result.error || "Сервер не смог обработать запрос.");
-    if (
-      !Array.isArray(result.cards) ||
-      !["found", "partial", "no_category", "all_filtered"].includes(
-        result.status,
-      )
-    )
-      throw new Error("Сервер вернул неполный ответ.");
-    if (requestId !== state.requestId) return;
-    state.result = result;
-  } catch (error) {
-    if (requestId !== state.requestId) return;
-    state.result = null;
-    state.error = signal.aborted
-      ? "Сервер не ответил вовремя. Попробуйте ещё раз."
-      : error instanceof TypeError
-        ? "Нет связи с сервером. Проверьте подключение и повторите запрос."
-        : error instanceof SyntaxError
-          ? "Получен некорректный ответ сервера. Повторите запрос."
-          : error.message;
-  } finally {
-    clearTimeout(timeout);
-    if (requestId === state.requestId) {
-      state.loading = false;
-      renderResults();
-    }
+function refreshQuery() {
+  const query = readQuery();
+  document.querySelectorAll("[data-demo]").forEach((button) => {
+    const demo = demos[Number(button.dataset.demo)];
+    button.setAttribute(
+      "aria-pressed",
+      String(queryFields.every((key) => (query[key] ?? "") === (demo[key] ?? ""))),
+    );
+  });
+  const preview = {
+    city: query.city || "Выберите город",
+    category: query.category || "Выберите категорию",
+    date: query.date ? dateLabel(query.date) : "Укажите дату",
+    budget: query.budget ? money(query.budget) : "Укажите бюджет",
+  };
+  for (const [name, value] of Object.entries(preview)) {
+    const node = document.querySelector(`#preview-${name}`);
+    if (node) node.textContent = value;
   }
 }
 
-function submitForm() {
-  if (!state.meta || !$("#query-form").reportValidity()) return;
-  const query = readForm();
-  $("#filters").classList.add("is-collapsed");
-  $("#toggle-filters").setAttribute("aria-expanded", "false");
-  requestRecommendations(query);
+function fillForm(query, clear = false, highlight = false) {
+  for (const name of queryFields) {
+    if (!clear && query[name] === undefined) continue;
+    const input = form.elements.namedItem(name);
+    const next = String(query[name] ?? "");
+    if (highlight && input.value !== next && !reduceMotion.matches) {
+      input.closest(".field").classList.add("field-updated");
+    }
+    input.value = next;
+  }
+  refreshQuery();
 }
 
-async function initialize() {
+async function loadMeta() {
+  retryMeta.hidden = true;
+  notice(metaFeedback, "Загружаем каталог…");
   try {
-    const response = await fetch("/api/meta", {
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!response.ok) throw new Error("Каталог временно недоступен.");
-    const meta = await response.json();
-    if (
-      !["cities", "categories", "eventTypes", "languages"].every((key) =>
-        Array.isArray(meta[key]),
-      )
-    )
-      throw new Error("Не удалось загрузить параметры каталога.");
-    state.meta = meta;
-    for (const [field, values] of [
-      ["city", meta.cities],
-      ["category", meta.categories],
-      ["eventType", meta.eventTypes],
-      ["language", meta.languages],
+    const meta = await request("/api/meta");
+    for (const [name, key] of [
+      ["city", "cities"],
+      ["category", "categories"],
+      ["eventType", "eventTypes"],
+      ["language", "languages"],
     ]) {
-      const select = $(`#${field}`);
-      select.replaceChildren();
-      if (field === "language") select.append(new Option("Любой язык", ""));
-      for (const value of values)
-        select.append(new Option(capitalize(value), value));
+      if (!Array.isArray(meta[key]))
+        throw new Error("Каталог недоступен. Попробуйте загрузить его ещё раз.");
+      const select = form.elements.namedItem(name);
+      select.replaceChildren(new Option(name === "language" ? "Любой" : "Выберите…", ""));
+      meta[key].forEach((value) => select.add(new Option(value, value)));
     }
-    $("#date").min = meta.dateRange.min;
-    $("#date").max = meta.dateRange.max;
-    $("#catalogue-total").textContent = meta.catalogue?.total ?? "";
-    $("#query-fields").disabled = false;
-    $("#parse-button").disabled = false;
-    setForm(DEFAULT_QUERY);
-    await requestRecommendations(DEFAULT_QUERY);
-  } catch {
-    state.loading = false;
-    state.error =
-      "Не удалось подключиться к каталогу. Проверьте, запущен ли сервер.";
-    renderResults();
+    form.elements.date.min = meta.dateRange?.min || "2026-09-23";
+    form.elements.date.max = meta.dateRange?.max || "2026-12-31";
+    fillForm(demos[0], true);
+    ready = true;
+    notice(metaFeedback);
+  } catch (error) {
+    notice(metaFeedback, error.message, "error");
+    retryMeta.hidden = false;
+  } finally {
+    setBusy(false);
   }
 }
 
-$("#query-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  markActiveDemo(null);
-  submitForm();
-});
-$("#query-form").addEventListener("input", () => {
-  formRevision += 1;
-  $("#draft-status").hidden = false;
-  markActiveDemo(null);
-  updateBudgetCaption();
-});
-$("#toggle-filters").addEventListener("click", () => {
-  const collapsed = $("#filters").classList.toggle("is-collapsed");
-  $("#toggle-filters").setAttribute("aria-expanded", String(!collapsed));
-  $("#toggle-filters").setAttribute(
-    "aria-label",
-    collapsed ? "Развернуть параметры события" : "Свернуть параметры события",
+function loading() {
+  activeActions = [];
+  results.setAttribute("aria-busy", "true");
+  const label = element("p", "loading-label", "Сравниваем условия и готовим подборку…");
+  label.prepend(icon("list-filter"));
+  const cards = element("div", "cards");
+  cards.setAttribute("aria-hidden", "true");
+  for (let index = 0; index < 3; index++) {
+    const card = element("div", "card skeleton-card");
+    const top = element("div", "skeleton-top");
+    const title = element("div", "skeleton-title");
+    title.append(element("div", "skeleton-line short"), element("div", "skeleton-line medium"));
+    top.append(element("div", "skeleton-avatar"), title);
+    const copy = element("div", "skeleton-copy");
+    copy.append(
+      element("div", "skeleton-line"),
+      element("div", "skeleton-line"),
+      element("div", "skeleton-line medium"),
+    );
+    card.append(top, copy, element("div", "skeleton-line medium"));
+    cards.append(card);
+  }
+  results.replaceChildren(label, cards);
+}
+
+function nameNode(name, index, avatar = false) {
+  const node = element("span");
+  const real = avatar
+    ? String(name)
+        .trim()
+        .split(/\s+/u)
+        .slice(0, 2)
+        .map((part) => [...part][0])
+        .join("")
+        .toLocaleUpperCase("ru")
+    : name;
+  node.append(
+    element("span", "real-name", real),
+    element(
+      "span",
+      "anonymous",
+      avatar ? String(index + 1).padStart(2, "0") : `Подрядчик ${index + 1}`,
+    ),
   );
+  return node;
+}
+
+function preparePrivacy(data) {
+  const unique = new Map();
+  [...data.cards, ...(data.excludedList || [])].forEach((item) => {
+    if (item.name && !unique.has(item.id || item.name))
+      unique.set(item.id || item.name, { name: item.name, index: unique.size });
+  });
+  identities = [...unique.values()];
+  const names = [...new Set(identities.map((item) => item.name))].sort(
+    (a, b) => b.length - a.length,
+  );
+  namePattern = names.length
+    ? new RegExp(names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "giu")
+    : null;
+}
+
+// Keep real and anonymous text in the same render; the global switch cannot flash names.
+function privateText(value) {
+  const fragment = document.createDocumentFragment();
+  const text = String(value ?? "");
+  let offset = 0;
+  if (namePattern) {
+    for (const match of text.matchAll(namePattern)) {
+      fragment.append(document.createTextNode(text.slice(offset, match.index)));
+      const person = identities.find(
+        (item) => item.name.toLocaleLowerCase("ru") === match[0].toLocaleLowerCase("ru"),
+      );
+      fragment.append(nameNode(match[0], person.index));
+      offset = match.index + match[0].length;
+    }
+  }
+  fragment.append(document.createTextNode(text.slice(offset)));
+  return fragment;
+}
+
+function renderCard(card, index) {
+  const article = element("article", "card result-card");
+  article.style.setProperty("--card-index", index);
+  const top = element("div", "card-top");
+  const avatar = element("div", "avatar");
+  avatar.setAttribute("aria-hidden", "true");
+  avatar.append(nameNode(card.name || "?", index, true));
+  const identity = element("div", "identity");
+  const headingRow = element("div", "identity-heading");
+  const heading = element("h3", "card-name");
+  heading.append(nameNode(card.name || "Без имени", index));
+  const badges = element("div", "badges");
+  const flags = card.flags || card.facts?.flags || {};
+  for (const [key, label] of [
+    ["synthetic", "Синтетический профиль"],
+    ["priceImputed", "Оценочная цена"],
+    ["cityImputed", "Город уточнён"],
+  ]) {
+    if (!flags[key]) continue;
+    const badge = element("span", `badge${key === "synthetic" ? " badge-synthetic" : ""}`, label);
+    badge.prepend(icon("badge-info"));
+    badges.append(badge);
+  }
+  headingRow.append(heading, badges);
+  const meta = element("div", "card-meta");
+  const city = element("span", "city", card.city);
+  city.prepend(icon("map-pin"));
+  meta.append(element("span", "", (card.categories || []).join(", ")), city);
+  identity.append(headingRow, meta);
+  const price = element("div", "card-price");
+  price.append(
+    element(
+      "span",
+      "price",
+      Number.isFinite(card.priceFrom) ? `от ${money(card.priceFrom)}` : "Цена не указана",
+    ),
+    element("span", "price-caption", "за мероприятие"),
+  );
+  top.append(avatar, identity, price);
+  const explanation = element("p", "explanation");
+  explanation.append(
+    privateText(
+      card.explanation || "Объяснение пока недоступно. Сравните условия подрядчика ниже.",
+    ),
+  );
+  const chips = element("div", "chips");
+  (card.factChips || []).forEach((value) => {
+    const chip = element("span", "chip");
+    chip.append(privateText(value));
+    chips.append(chip);
+  });
+  const scoreDetails = element("details", "score-details");
+  const scoreSummary = element("summary", "", "Как посчитан рейтинг");
+  const scoreGrid = element("div", "score-grid");
+  scoreParts.forEach(([key, label, weight]) => {
+    const value = Math.max(0, Math.min(1, Number(card.scoreParts?.[key]) || 0));
+    const row = element("div", "score-row");
+    const heading = element("div", "score-row-heading");
+    heading.append(
+      element("span", "", label),
+      element("span", "", `${Math.round(value * 100)}% · вес ${weight}%`),
+    );
+    const track = element("div", "score-track");
+    const fill = element("span", "score-fill");
+    fill.style.width = `${value * 100}%`;
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-label", label);
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", "100");
+    track.setAttribute("aria-valuenow", String(Math.round(value * 100)));
+    track.append(fill);
+    row.append(heading, track);
+    scoreGrid.append(row);
+  });
+  scoreDetails.append(scoreSummary, scoreGrid);
+  const footer = element("div", "card-footer");
+  if (card.facts?.languages?.length) {
+    const languages = element("span", "languages", card.facts.languages.join(" · "));
+    languages.prepend(icon("languages"));
+    footer.append(languages);
+  }
+  if (Number.isFinite(card.score))
+    footer.append(
+      element(
+        "span",
+        "score",
+        `Соответствие: ${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(card.score * 100)} / 100`,
+      ),
+    );
+  article.append(top, explanation, chips, scoreDetails);
+  if (footer.childElementCount) article.append(footer);
+  return article;
+}
+
+function commonFactsText(commonFacts) {
+  if (Array.isArray(commonFacts)) return commonFacts.filter(Boolean).join(" · ");
+  if (typeof commonFacts?.text === "string") return commonFacts.text;
+  return "";
+}
+
+function renderActionButtons(data) {
+  activeActions = data.actions || [];
+  const actions = element("div", "actions summary-actions");
+  activeActions.forEach((action, index) => {
+    const button = element("button", "button button-outline", action.label);
+    button.type = "button";
+    button.dataset.action = index;
+    button.append(icon("arrow-right"));
+    actions.append(button);
+  });
+  return actions;
+}
+
+function renderComparison(data, panel) {
+  const section = element("section", "comparison-result");
+  section.append(element("h3", "", "Сравнение дат"), element("p", "comparison-message", data.message));
+  const columns = element("div", "comparison-columns");
+  for (const [label, result] of [
+    ["Текущая дата", data.a],
+    ["Другая дата", data.b],
+  ]) {
+    const column = element("div", "comparison-column");
+    column.append(
+      element("span", "eyebrow", label),
+      element("strong", "", dateLabel(result?.query?.date || "")),
+      element("span", "", `Подрядчиков: ${result?.cards?.length || 0}`),
+    );
+    columns.append(column);
+  }
+  section.append(columns);
+  panel.replaceChildren(section);
+  panel.hidden = false;
+}
+
+function renderCompareControls(container, query) {
+  if (!query?.date) return;
+  const section = element("section", "compare-tools");
+  const formNode = element("form", "compare-form");
+  const label = element("label", "", "Сравнить с другой датой");
+  label.htmlFor = "compare-date";
+  const date = element("input");
+  date.id = "compare-date";
+  date.name = "date2";
+  date.type = "date";
+  date.required = true;
+  date.min = form.elements.date.min || "2026-09-23";
+  date.max = form.elements.date.max || "2026-12-31";
+  date.value = query.date;
+  const button = element("button", "button button-outline", "Сравнить");
+  button.type = "submit";
+  const panel = element("div", "compare-panel");
+  panel.hidden = true;
+  formNode.append(label, date, button);
+  section.append(formNode, panel);
+  formNode.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    button.disabled = true;
+    button.textContent = "Сравниваем…";
+    panel.hidden = false;
+    panel.replaceChildren(element("p", "notice", "Сравниваем выдачу на двух датах…"));
+    try {
+      renderComparison(await request("/api/compare", { query, date2: date.value }), panel);
+    } catch (error) {
+      panel.replaceChildren(
+        element("p", "notice compare-error", `Сравнение недоступно. ${error.message}`),
+      );
+    } finally {
+      button.disabled = false;
+      button.textContent = "Сравнить";
+    }
+  });
+  container.append(section);
+}
+
+function renderExclusions(data) {
+  const excluded = data.excludedList || [];
+  const counts = data.excluded || {};
+  const total =
+    excluded.length || Object.values(counts).reduce((sum, count) => sum + Number(count || 0), 0);
+  if (!total) return;
+  const section = element("section", "exclusions");
+  const toggle = element("button", "disclosure");
+  toggle.type = "button";
+  toggle.dataset.disclosure = "true";
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-controls", "excluded-body");
+  const chevron = icon("chevron-down");
+  chevron.classList.add("chevron");
+  toggle.append(
+    icon("list-filter"),
+    element("span", "", "Почему не попали"),
+    element("span", "count", total),
+    chevron,
+  );
+  const panel = element("div", "disclosure-panel");
+  panel.id = "excluded-body";
+  panel.inert = true;
+  const content = element("div", "disclosure-content");
+  for (const [reason, label] of Object.entries(reasons)) {
+    const items = excluded.filter((item) => item.reason === reason);
+    const count = items.length || counts[reason];
+    if (!count) continue;
+    const group = element("section", "reason-group");
+    const title = element("h3", "", label);
+    title.append(element("span", "", count));
+    const list = element("ul");
+    items.forEach((item) => {
+      const line = element("li");
+      const name = element("span", "excluded-name");
+      name.append(privateText(item.name));
+      const detail = element("span");
+      detail.append(privateText(item.detail || label));
+      line.append(name, detail);
+      list.append(line);
+    });
+    group.append(title, list);
+    content.append(group);
+  }
+  panel.append(content);
+  section.append(toggle, panel);
+  results.append(section);
+}
+
+function renderResult(data) {
+  if (!statuses[data.status] || !Array.isArray(data.cards))
+    throw new Error("Не удалось прочитать результат подбора. Попробуйте ещё раз.");
+  preparePrivacy(data);
+  const summary = element("div", "summary");
+  const top = element("div", "summary-top");
+  const status = element("span", `status status-${data.status}`, statuses[data.status].label);
+  status.prepend(icon(statuses[data.status].icon));
+  top.append(status, element("span", "result-count", `В подборке: ${data.cards.length}`));
+  if (Number.isFinite(data.elapsedMs)) {
+    const time = element(
+      "span",
+      "timing",
+      `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(data.elapsedMs / 1000)} с`,
+    );
+    time.prepend(icon("clock-3"));
+    top.append(time);
+  }
+  const message = element("p");
+  message.append(privateText(data.message || statuses[data.status].label));
+  summary.append(top, message);
+  const common = commonFactsText(data.commonFacts);
+  if (common) {
+    const facts = element("p", "common-facts");
+    facts.prepend(icon("circle-check"));
+    facts.append(privateText(common));
+    summary.append(facts);
+  }
+  if (data.query) {
+    const context = element("div", "query-context");
+    for (const [symbol, value] of [
+      ["map-pin", data.query.city],
+      ["calendar-days", dateLabel(data.query.date)],
+      ["wallet", money(data.query.budget)],
+    ]) {
+      const item = element("span", "", value);
+      item.prepend(icon(symbol));
+      context.append(item);
+    }
+    summary.append(context);
+  }
+  const summaryActions = renderActionButtons(data);
+  if (summaryActions.childElementCount) summary.append(summaryActions);
+  renderCompareControls(summary, data.query);
+  results.replaceChildren(summary);
+  if (data.cards.length) {
+    const cards = element("div", "cards");
+    data.cards.forEach((card, index) => cards.append(renderCard(card, index)));
+    results.append(cards);
+  } else {
+    const empty = element("div", "empty-state");
+    empty.dataset.state = data.status;
+    const symbol = element("div", "state-symbol");
+    symbol.append(icon(data.status === "no_category" ? "map-pin" : "search-x"));
+    empty.append(
+      symbol,
+      element(
+        "h3",
+        "",
+        data.status === "no_category" ? "Расширим географию поиска?" : "Немного изменим запрос?",
+      ),
+      element(
+        "p",
+        "",
+        data.status === "no_category"
+          ? "В этом городе нужной категории пока нет. Рассмотрите другой город или выберите другую категорию."
+          : "Подрядчики есть, но никто не подошёл по всем условиям. Попробуйте другую дату или измените параметры.",
+      ),
+    );
+    const breakdown = element("div", "filter-breakdown");
+    for (const [reason, label] of Object.entries(reasons)) {
+      if (data.excluded?.[reason])
+        breakdown.append(element("span", "", `${label}: ${data.excluded[reason]}`));
+    }
+    if (breakdown.childElementCount) empty.append(breakdown);
+    results.append(empty);
+  }
+  const hints = element("div", "hints");
+  if (data.hints?.nearestFreeDate) {
+    const hint = element("p", "", `Ближайшая дата: ${dateLabel(data.hints.nearestFreeDate)}`);
+    hint.prepend(icon("calendar-days"));
+    hints.append(hint);
+  }
+  if (Number.isFinite(data.hints?.minBudgetNeeded)) {
+    const hint = element("p", "", `Минимальный бюджет: ${money(data.hints.minBudgetNeeded)}`);
+    hint.prepend(icon("wallet"));
+    hints.append(hint);
+  }
+  (data.otherCities || []).forEach((item) =>
+    hints.append(element("p", "", `${item.city}: ${item.count} в каталоге`)),
+  );
+  if (hints.childElementCount) results.append(hints);
+  renderExclusions(data);
+}
+
+async function search(query) {
+  if (busy) return;
+  lastQuery = structuredClone(query);
+  notice(formFeedback);
+  setBusy(true);
+  loading();
+  if (window.matchMedia("(max-width: 760px)").matches)
+    document
+      .querySelector(".results-heading")
+      .scrollIntoView({ behavior: reduceMotion.matches ? "auto" : "smooth", block: "start" });
+  try {
+    renderResult(await request("/api/recommend", query));
+  } catch (error) {
+    if (error.status === 400)
+      notice(formFeedback, `Проверьте параметры. ${error.message}`, "error");
+    const panel = element("div", "error-panel");
+    panel.dataset.status = error.status || "network";
+    panel.setAttribute("role", "alert");
+    const symbol = element("div", "state-symbol");
+    symbol.append(icon(error.status === 503 ? "server-off" : "circle-alert"));
+    panel.append(
+      symbol,
+      element(
+        "h3",
+        "",
+        error.status === 503
+          ? "Сервис временно недоступен"
+          : error.status === 400
+            ? "Уточните параметры запроса"
+            : "Подбор пока недоступен",
+      ),
+      element("p", "", error.message),
+    );
+    const retry = element("button", "button button-outline", "Попробовать ещё раз");
+    retry.type = "button";
+    retry.dataset.retry = "true";
+    retry.prepend(icon("rotate-ccw"));
+    panel.append(retry);
+    results.replaceChildren(panel);
+  } finally {
+    results.setAttribute("aria-busy", "false");
+    setBusy(false);
+  }
+}
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  notice(parseFeedback);
+  search(readQuery());
+});
+form.addEventListener("input", () => {
+  refreshQuery();
+  notice(formFeedback);
+});
+form.addEventListener("change", refreshQuery);
+form.addEventListener("animationend", (event) => {
+  if (event.animationName === "field-flash")
+    event.target.closest(".field")?.classList.remove("field-updated");
+});
+parseForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (busy) return;
+  const partialQuery = readQuery();
+  setBusy(true, "parse");
+  notice(parseFeedback);
+  try {
+    const data = await request("/api/parse", {
+      text: document.querySelector("#free-text").value.trim(),
+      partialQuery,
+    });
+    if (!data.query || typeof data.query !== "object")
+      throw new Error("Не удалось разобрать описание. Заполните форму вручную.");
+    fillForm(data.query, false, true);
+    notice(formFeedback);
+    notice(
+      parseFeedback,
+      data.question || "Параметры заполнены. Всё верно? Можно запускать подбор.",
+    );
+  } catch (error) {
+    const message =
+      error.status === 503
+        ? "Разбор текста временно недоступен. Заполните параметры вручную — подбор подрядчиков продолжает работать."
+        : error.message;
+    notice(parseFeedback, message, error.status === 503 ? "warning" : "error");
+  } finally {
+    setBusy(false);
+  }
 });
 document.querySelectorAll("[data-demo]").forEach((button) =>
   button.addEventListener("click", () => {
-    if (!state.meta) return;
-    setForm(DEMOS[button.dataset.demo]);
-    markActiveDemo(button.dataset.demo);
-    submitForm();
+    const query = demos[Number(button.dataset.demo)];
+    fillForm(query, true);
+    notice(parseFeedback);
+    search(query);
   }),
 );
-$("#export-button").addEventListener("click", () => {
-  const payload =
-    state.view === "saved"
-      ? { saved: Object.values(state.saved) }
-      : state.result;
-  const url = URL.createObjectURL(
-    new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json;charset=utf-8",
-    }),
-  );
-  const link = node("a");
-  link.href = url;
-  link.download =
-    state.view === "saved"
-      ? "pitchers-favorites.json"
-      : `pitchers-${state.result.query.date}.json`;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  announce("Подборка подготовлена к скачиванию");
-});
-$("#profile-dialog").addEventListener("click", (event) => {
-  if (event.target === $("#profile-dialog")) $("#profile-dialog").close();
-});
-window.addEventListener("hashchange", () =>
-  setView(location.hash === "#saved" ? "saved" : "search"),
-);
-$("#hide-names").addEventListener("change", (event) => {
-  state.hideNames = event.target.checked;
-  if (state.view === "saved") renderSaved();
-  else renderResults();
-});
-$("#parse-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!state.meta || $("#parse-button").disabled) return;
-  const revision = formRevision;
-  const feedback = $("#parse-feedback");
-  feedback.hidden = false;
-  feedback.textContent = "Распознаём параметры события...";
-  $("#parse-button").disabled = true;
-  try {
-    const response = await fetch("/api/parse", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: $("#free-text").value.trim(),
-        partialQuery: readForm(),
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-    const data = await response.json();
-    if (!response.ok)
-      throw new Error(
-        data.error ||
-          "Распознавание недоступно; параметры можно указать в форме.",
-      );
-    if (
-      !data.query ||
-      typeof data.query !== "object" ||
-      Array.isArray(data.query)
-    )
-      throw new Error("Не удалось распознать параметры события.");
-    if (revision !== formRevision) {
-      feedback.textContent =
-        "Параметры были изменены. Повторите распознавание.";
-      return;
-    }
-    setForm({ ...readForm(), ...data.query });
-    markActiveDemo(null);
-    $("#draft-status").hidden = false;
-    feedback.textContent = data.question || "Параметры заполнены.";
-  } catch (error) {
-    feedback.textContent =
-      error instanceof TypeError || error.name === "TimeoutError"
-        ? "Нет ответа сервера; параметры можно указать в форме."
-        : error instanceof SyntaxError
-          ? "Сервер вернул некорректный ответ."
-          : error.message;
-  } finally {
-    $("#parse-button").disabled = false;
+results.addEventListener("click", (event) => {
+  const action = event.target.closest("[data-action]");
+  if (action && !busy) {
+    const query = activeActions[Number(action.dataset.action)].query;
+    fillForm(query, true);
+    search(query);
+  }
+  if (event.target.closest("[data-retry]") && lastQuery) search(lastQuery);
+  const toggle = event.target.closest("[data-disclosure]");
+  if (toggle) {
+    const open = toggle.getAttribute("aria-expanded") !== "true";
+    toggle.setAttribute("aria-expanded", String(open));
+    const panel = document.getElementById(toggle.getAttribute("aria-controls"));
+    panel.classList.toggle("is-open", open);
+    panel.inert = !open;
   }
 });
-loadSaved();
-setView(state.view);
-refreshIcons();
-initialize();
+const hideNames = document.querySelector("#hide-names");
+const syncPrivacy = () => document.body.classList.toggle("names-hidden", hideNames.checked);
+hideNames.addEventListener("change", syncPrivacy);
+window.addEventListener("pageshow", syncPrivacy);
+syncPrivacy();
+retryMeta.addEventListener("click", loadMeta);
+document.querySelector("#selfcheck-button")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const panel = document.querySelector("#selfcheck-panel");
+  button.disabled = true;
+  button.textContent = "Проверяем…";
+  panel.hidden = false;
+  panel.replaceChildren(element("p", "notice", "Запускаем проверку требований…"));
+  try {
+    const data = await request("/api/selfcheck");
+    const checks = Array.isArray(data) ? data : data.checks || data.results || data.items || [];
+    const list = element("ul", "selfcheck-list");
+    checks.forEach((check) => {
+      const passed = Boolean(check.ok ?? check.passed ?? check.success);
+      const item = element("li", passed ? "is-passed" : "is-failed");
+      item.append(
+        element("strong", "", `${passed ? "✓" : "✗"} ${check.label || check.name || "Проверка"}`),
+        element("span", "", check.detail || check.message || ""),
+      );
+      list.append(item);
+    });
+    panel.replaceChildren(
+      checks.length ? list : element("p", "notice", "Сервер не вернул список проверок."),
+    );
+  } catch (error) {
+    panel.replaceChildren(
+      element("p", "notice compare-error", `Проверка недоступна. ${error.message}`),
+    );
+  } finally {
+    button.disabled = false;
+    button.textContent = "Проверка требований";
+  }
+});
+loadMeta();
