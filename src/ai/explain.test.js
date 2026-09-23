@@ -106,7 +106,8 @@ test("busy date changes cards while engine counts and messages stay intact", asy
   assert.match(second.message, /занят/);
   for (const card of second.cards) {
     assert.ok(!getContractors().find((item) => item.id === card.id).busyDates.has(original.query.date));
-    assert.match(card.explanation, /26\.12\.2026/);
+    assert.match(second.commonFacts.text, /26\.12\.2026/);
+    assert.doesNotMatch(card.explanation, /26\.12\.2026/);
   }
 });
 
@@ -129,13 +130,13 @@ test("synthetic, estimated and null price/hour facts are never hidden or invente
   facts.differentiators = ["noHourLimit"];
   let text = templateExplanation(facts, { ...query, hours: 6 });
   assert.match(text, /Синтетический профиль/);
-  assert.match(text, /оценочная цена/);
+  assert.match(text, /оценочная цена/iu);
   assert.match(text, /не привязана к часам присутствия/);
   assert.doesNotMatch(text, /безлимит|бесконеч/);
   facts.priceFrom = null;
   facts.headroomKzt = null;
   text = templateExplanation(facts, query);
-  assert.match(text, /цена не указана/);
+  assert.match(text, /цена не указана/iu);
   assert.doesNotMatch(text, /остаток бюджета|цена от 0/);
 });
 
@@ -260,6 +261,7 @@ test("content validator rejects generic phrases, invented numbers and missing ev
   const id = original.cards[0].id;
   for (const changed of [null, [], {}, { ...texts, extra: "unexpected" }, { ...texts, [id]: 3 },
     { ...texts, [id]: "Отличный выбор для мероприятия." },
+    { ...texts, [id]: "Свободен по календарю на 17.10.2026. " + texts[id] },
     { ...texts, [id]: texts[id] + " Получил 987654 наград." },
     { ...texts, [id]: texts[id].replace(cardEvidence(original)[id].detail, "Факты отсутствуют") }]) {
     assert.equal(validExplanations(changed, original), false);
@@ -333,6 +335,30 @@ test("templates remain valid across all source profiles and description shapes",
     assert.deepEqual(explanations(first), explanations(second));
     assert.ok(second.cards.every((card) => card.explanationSource === "template"));
   }
+});
+
+test("templates start with evidence, keep common facts outside and do not duplicate the opening", async () => {
+  const original = fixture();
+  const evidence = cardEvidence(original);
+  const result = await offline()(original);
+  assert.deepEqual(result.commonFacts, commonFacts(original));
+  for (const card of result.cards) {
+    assert.ok(card.explanation.toLocaleLowerCase("ru").startsWith(evidence[card.id].differentiator));
+    assert.doesNotMatch(card.explanation, /свободен по календарю|17\.10\.2026|формат «корпоратив»/iu);
+  }
+  assert.ok(pairwiseDistinct(explanations(result), original));
+  const single = { ...original, cards: [original.cards[1]] };
+  const text = templateExplanations(single)[single.cards[0].id];
+  assert.equal((text.match(/в описании:/giu) ?? []).length, 1);
+});
+
+test("identical profile facts disclose missing evidence without inventing distinctions", () => {
+  const original = fixture();
+  const first = { ...original.cards[0], facts: { ...original.cards[0].facts, differentiators: [] } };
+  const identical = { ...original, cards: [first, { ...structuredClone(first), id: "duplicate" }] };
+  const texts = templateExplanations(identical);
+  assert.equal(validExplanations(texts, identical), false);
+  for (const text of Object.values(texts)) assert.match(text, /^Различия по имеющимся фактам не подтверждены/);
 });
 
 test("missing engine tags use distinct profile facts without changing the engine", () => {

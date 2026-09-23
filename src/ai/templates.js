@@ -72,16 +72,18 @@ export function cardEvidence(result) {
       if (witness) witnesses.push(witness);
     }
     const base = explanationEvidence(card.facts, result.query);
-    const differentiator = base.differentiator || witnesses[0]?.phrase || (peers.length
-      ? "различия по имеющимся фактам не подтверждены" : available[0]?.phrase || base.detail);
-    const details = [base.detail];
+    const distinguishable = peers.every((peer) => witnesses.some((witness) => differsFrom(witness, peer.facts)));
+    const differentiator = !distinguishable ? "различия по имеющимся фактам не подтверждены"
+      : base.differentiator || witnesses[0]?.phrase || base.detail;
+    const details = normalizeText(differentiator).includes(normalizeText(base.detail)) ? [] : [base.detail];
     for (const witness of witnesses) {
-      if (!normalizeText(differentiator + details.join("; ")).includes(normalizeText(witness.phrase))) {
+      const present = normalizeText(differentiator + details.join("; "));
+      if (!present.includes(normalizeText(witness.phrase))
+        && !(witness.field === "maxHours" && present.includes(`${witness.value} ч`))) {
         details.push(witness.phrase);
       }
     }
-    return [card.id, { differentiator, detail: details.join("; "), witnesses,
-      distinguishable: peers.every((peer) => witnesses.some((witness) => differsFrom(witness, peer.facts))) }];
+    return [card.id, { differentiator, detail: details.join("; "), witnesses, distinguishable }];
   }));
 }
 
@@ -95,20 +97,17 @@ export function commonFacts(result) {
 }
 
 export function templateExplanation(facts, query, evidence = explanationEvidence(facts, query)) {
-  const date = query.date.split("-").reverse().join(".");
-  const prefix = facts.flags.synthetic ? "Синтетический профиль; " : "";
   const price = Number.isFinite(facts.priceFrom)
     ? `${facts.flags.priceImputed ? "оценочная цена" : "цена"} от ${formatMoney(facts.priceFrom)} ₸`
     : "цена не указана, соответствие бюджету нужно уточнить";
-  const details = [`свободен по календарю на ${date}`, `формат «${query.eventType}»`, price];
-  if (Number.isFinite(facts.headroomKzt)) details.push(`остаток бюджета ${formatMoney(facts.headroomKzt)} ₸`);
-  if (query.language) details.push(`язык: ${query.language}`);
-  if (query.hours) {
-    details.push(facts.maxHours === null ? "работа не привязана к часам присутствия" : `лимит ${facts.maxHours} ч при запросе ${query.hours} ч`);
-  }
   const { differentiator, detail } = evidence;
-  const sentences = [prefix + details.join(", "), [differentiator, detail].filter(Boolean).join("; ")];
-  return sentences.map((text) => text.charAt(0).toUpperCase() + text.slice(1) + ".").join(" ");
+  const first = [differentiator, detail].filter(Boolean).join("; ");
+  const disclosures = [];
+  if (!normalizeText(first).includes(normalizeText(price))) disclosures.push(price);
+  if (facts.flags.synthetic) disclosures.push("Синтетический профиль");
+  if (facts.flags.cityImputed) disclosures.push("город уточнён");
+  return [first, disclosures.join("; ")].filter(Boolean)
+    .map((text) => text.charAt(0).toUpperCase() + text.slice(1) + ".").join(" ");
 }
 
 export function templateExplanations(result) {

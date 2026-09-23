@@ -11,14 +11,14 @@ export const SYSTEM_PROMPT = `Ты объясняешь подбор event-по�
 {"<id>": "<объяснение>"}, ровно по одному тексту для каждого переданного ID.
 Для каждой карточки напиши 1–2 коротких предложения из переданных фактов.
 Каждое объяснение НАЧИНАЙ дословно с evidence.differentiator, первую букву сделай заглавной.
-Затем включи дословно evidence.detail и хотя бы одну свою цифру или цитату из evidence.witnesses,
+Затем включи дословно evidence.detail, если не пуста, и свою цифру или цитату из evidence.witnesses,
 которой нет у остальных карточек. Эти отличия вычислены только из facts показанных карточек.
 Не повторяй общую дату, город, соответствие формату, языку и запрошенным часам:
 они уже вынесены в commonFacts и показываются над карточками один раз.
 Укажи цену ОТ (цифры с пробелами между тысячами, знак ₸).
 Если цена null, напиши «цена не указана», не обещай соответствие бюджету.
 Не добавляй общий каркас «свободен, формат, цена». При distinguishable=false не выдумывай отличие.
-flags.synthetic=true: обязательно «Синтетический профиль», это демонстрационные
+flags.synthetic=true: после отличия обязательно «Синтетический профиль», это демонстрационные
 данные, а не реальный проверенный подрядчик. flags.priceImputed=true: цена «оценочная».
 maxHours=null означает работу без привязки к присутствию, а не бесконечную смену.
 Не добавляй отзывы, рейтинги, гарантии, опыт и другие факты вне входных данных.
@@ -62,13 +62,15 @@ export function validExplanations(texts, result) {
     if (forbiddenPhrase.test(text) || !/[а-яё]/iu.test(text)) return false;
     const normalized = fold(text);
     const { differentiator, detail } = evidence[id];
-    if (!normalized.includes(fold(detail)) || (differentiator && !normalized.includes(fold(differentiator)))) return false;
+    if (!normalized.includes(fold(detail)) || !normalized.startsWith(fold(differentiator))) return false;
     if (Number.isFinite(facts.priceFrom)) {
       if (!normalized.includes(`от ${formatMoney(facts.priceFrom)} ₸`)) return false;
       if (facts.flags.priceImputed && !normalized.includes("оценочн")) return false;
     } else if (!normalized.includes("цена не указана")) return false;
     if (facts.flags.synthetic && !normalized.includes("синтетический профиль")) return false;
     const date = result.query.date.split("-").reverse().join(".");
+    const unquoted = normalized.replace(/«[^»]*»/g, "");
+    if (unquoted.includes(date) || unquoted.includes(result.query.date) || /свобод[еённы]+ по календарю/u.test(unquoted)) return false;
     const allowedNumbers = numbers(JSON.stringify({ query: result.query, facts, differentiator, detail }) + date);
     if ([...numbers(text)].some((number) => !allowedNumbers.has(number))) return false;
     // Ignore quoted profile text and date/decimal dots when counting sentences.
